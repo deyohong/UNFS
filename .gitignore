@@ -1,0 +1,10 @@
+*.o
+*.a
+*.so
+*.*~
+*_test
+test/unfs_format
+test/unfs_check
+test/unfs_shell
+html/
+latex/
