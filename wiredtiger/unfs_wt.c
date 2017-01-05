@@ -546,12 +546,6 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
     }
     free(device);
 
-    // create the home directory
-    if (unfs_create(fs, homedir, 1, 1)) {
-        ERROR("Cannot create home directory %s", homedir);
-        return EINVAL;
-    }
-
     // create and register WT custom filesystem
     unfs_wt_file_system_t* unfs = calloc(1, sizeof(unfs_wt_file_system_t));
     unfs->unfs = fs;
@@ -570,6 +564,15 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
         ERROR("set_file_system: %s", wiredtiger_strerror(err));
         return err;
     }
+
+#if 1
+    // workaround MongoDB bug https://jira.mongodb.org/browse/SERVER-27571
+    strcat(homedir, "/journal");
+    if (unfs_create(fs, homedir, 1, 1)) {
+        ERROR("Cannot create directory %s", homedir);
+        return EINVAL;
+    }
+#endif
 
     return 0;
 }
@@ -649,3 +652,4 @@ int unfs_wiredtiger_open(const char* home, WT_EVENT_HANDLER* errhandler,
     free(newconfig);
     return err;
 }
+

@@ -27,8 +27,8 @@ Although UNFS can be configured to be standalone, for completeness,
 it requires additional source packages to be downloaded including UNVMe
 driver, WiredTiger with custom filesystem feature support, and MongoDB.
 Each of these packages may have its own requirements.  For example,
-UNVMe requires Linux kernel with VFIO module support, and MongoDB
-requires at least GCC version 5.3 (which does not come with
+UNVMe requires Linux with a kernel version that supports VFIO, and
+MongoDB requires at least GCC version 5.3 (which does not come with
 CentOS 6 or 7), etc.
 
 
@@ -66,7 +66,7 @@ To run MongoDB on UNFS, use the following procedure (tested on CentOS):
         $ git clone https://github.com/wiredtiger/wiredtiger.git -b develop
         $ cd wiredtiger
 
-       Patch the WiredTiger code:
+       Patch the WiredTiger code for UNFS usage:
 
         $ patch -p1 < /WORK/unfs/wiredtiger/unfs_wiredtiger.patch
 
@@ -104,21 +104,19 @@ for device name with PCI format (e.g. 07:00.0) and to raw block device
 for name starting with /dev/.
 
 
-Note that to use UNVMe driver for NVMe devices, run the setup script once:
+To use UNVMe driver for NVMe devices, run the setup script once:
 
     $ unvme_setup
 
 
-The following UNFS unit tests are available:
+The following UNFS unit tests may be run from source directory:
 
     $ test/unfs_rmw_test
-
     $ test/unfs_tree_test
-
     $ wiredtiger/unfs_wt_test
 
 
-The following UNFS commands are available:
+The following UNFS commands are available (in /usr/local/bin):
 
     unfs_format     - Format UNFS filesystem
     unfs_check      - Scan and validate UNFS filesystem nodes
@@ -138,16 +136,12 @@ cannot open shared object file, try to add it to /etc/ld.so.conf, e.g.:
 Run MongoDB Tests
 =================
 
-Not all MongoDB and WiredTiger functionalities fully support custom
-filesystem such as UNFS, especially where POSIX APIs are used to access
-files and directories.  One example is when MongoDB run, it will
-create the local "journal" directory using the mkdir API in which 
-the directory will not be seen on UNFS.
+The WiredTiger custom filesystem feature is still under development and
+not yet released with MongoDB, so some MongoDB functionalities may not work,
+especially where POSIX APIs are used to access native files and directories.
+MongoDB 3.4 core features, however, have been tested with UNFS.
 
-To work around the journal directory issue, use unfs_shell to create
-the journal directory manually once prior to running mongod.
-
-Steps to setup UNFS (with UNVMe):
+Steps to setup UNFS (with UNVMe) and run mongod:
 
     $ unvme-setup
     # Setup all NVMe devices for UNVMe driver
@@ -158,49 +152,23 @@ Steps to setup UNFS (with UNVMe):
     $ unfs_format
     UNFS format device 07:00.0 label "User Space Nameless Filesystem"
 
-Note that unfs_format is equivalent to running mkfs on a new device.
-For using raw device, skip unvme-setup and specify instead.
-export UNFS_DEVICE=/dev/nvme0n1 (or whatever block device).
+    $ /WORK/mongod
+    ...
+
+Note that running unfs_format is equivalent to invoking mkfs on a new device.
+For using raw device, skip unvme-setup and specify the device name instead,
+e.g., export UNFS_DEVICE=/dev/nvme0n1 (or whatever block device name).
 
 
 Steps to run MongoDB smoke tests:
 
-    $ unfs_shell
-    UNFS Shell (device 07:0.0)
-
-    UNFS:/> mkdir /data/db/job0/resmoke/journal
-    
-    UNFS:/> q
-
     $ cd /WORK/mongo
 
-    $ buildscripts/resmoke.py --suites=core --storageEngine=wiredTiger
+    $ buildscripts/resmoke.py --storageEngine=wiredTiger --suites=core
 
-Note that resmoke.py script specifies "--dbpath /data/db/job0/resmoke"
-so the test will fail immediately unless /data/db/job0/resmoke/journal
-is created first using unfs_shell command prior to running the smoke test.
-
-However, there may be tests within resmoke.py that will fail with no
-journal directory error message when such test specifies a newly different
-data path.  It should also be noted that UNVMe driver only suports one
-owner process, i.e. one mongod process.  So test such as jsHeapLimit.js
-that launches a second mongod process will fail in both of the indicated
-scenarios.
-
-
-Steps to run mongod:
-
-    $ cd /WORK/mongo
-
-    $ unfs_shell
-    UNFS Shell (device 07:0.0)
-
-    UNFS:/> mkdir /data/db/journal
-    
-    UNFS:/> q
-
-    $ /WORK/mongo/mongod
-
-Note that the default MongoDB data path is /data/db, so /data/db/journal
-directory has to be created first.
+It should be noted that the UNVMe driver only suports one process accessing
+a given NVMe device, so the smoke test will fail at jsHeapLimit.js since the
+test will launch a second mongod process and fail to open the NVMe device
+that is already owned by another process.  However, all the core tests
+should pass running against a raw device (using the kernel space driver).
 

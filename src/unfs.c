@@ -956,13 +956,18 @@ unfs_fd_t unfs_file_open(unfs_fs_t fs, const char *name, unfs_mode_t mode)
  */
 int unfs_file_close(unfs_fd_t fd)
 {
+    int err = 0;
     unfs_node_t* nodep = fd.id;
     DEBUG_FN("%s %d", nodep->name, nodep->open);
-    if (!nodep->open || nodep->isdir)
-        return EINVAL;
 
-    __sync_fetch_and_sub(&nodep->open, 1);
-    return 0;
+    FS_LOCK();
+    int open = __sync_fetch_and_sub(&nodep->open, 1);
+    if (nodep->isdir || open <= 0) {
+        nodep->open = 0;
+        err = EINVAL;
+    }
+    FS_UNLOCK();
+    return err;
 }
 
 /**
@@ -1156,12 +1161,18 @@ unfs_fd_t unfs_dir_open(unfs_fs_t fs, const char *name, unfs_mode_t mode)
  */
 int unfs_dir_close(unfs_fd_t fd)
 {
+    int err = 0;
     unfs_node_t* nodep = fd.id;
     DEBUG_FN("%s %d", nodep->name, nodep->open);
-    if (!nodep->open || !nodep->isdir)
-        return EINVAL;
-    __sync_fetch_and_sub(&nodep->open, 1);
-    return 0;
+
+    FS_LOCK();
+    int open = __sync_fetch_and_sub(&nodep->open, 1);
+    if (!nodep->isdir || open <= 0) {
+        nodep->open = 0;
+        err = EINVAL;
+    }
+    FS_UNLOCK();
+    return err;
 }
 
 /**
@@ -1800,3 +1811,4 @@ int unfs_format(const char* device, const char* label, int print)
     LOG_CLOSE();
     return err;
 }
+
