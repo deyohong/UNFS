@@ -225,9 +225,7 @@ int unfs_rename(unfs_fs_t fs, const char* src, const char* dst, int override);
 int unfs_exist(unfs_fs_t fs, const char* name, int* isdirp, u64* sizep);
 int unfs_stat(unfs_fs_t fs, unfs_header_t* statp, int print);
 
-unfs_fd_t unfs_dir_open(unfs_fs_t fs, const char* name, unfs_mode_t mode);
-int unfs_dir_close(unfs_fd_t);
-unfs_dir_list_t* unfs_dir_list(unfs_fd_t fd);
+unfs_dir_list_t* unfs_dir_list(unfs_fs_t fs, const char* name);
 void unfs_dir_list_free(unfs_dir_list_t* listp);
 
 unfs_fd_t unfs_file_open(unfs_fs_t fs, const char* name, unfs_mode_t mode);

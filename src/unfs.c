@@ -896,15 +896,13 @@ static unfs_node_t* unfs_node_create(const char *name, int isdir)
 }
 
 /**
- * Open a file/directory node.
+ * Open/Create a file.
  * @param   fs          filesystem reference
- * @param   name        file name
- * @param   mode        mode
- * @param   isdir       is directory flag
+ * @param   name        canonical name
+ * @param   mode        open mode
  * @return  file descriptor reference or NULL if error.
  */
-static unfs_fd_t unfs_node_open(unfs_fs_t fs, const char *name,
-                                unfs_mode_t mode, int isdir)
+unfs_fd_t unfs_file_open(unfs_fs_t fs, const char *name, unfs_mode_t mode)
 {
     unfs_fd_t fd = { .error = 0, .mode = mode, .id = NULL };
 
@@ -927,26 +925,13 @@ static unfs_fd_t unfs_node_open(unfs_fs_t fs, const char *name,
             FS_UNLOCK();
             return fd;
         }
-        nodep = unfs_node_create(name, isdir);
+        nodep = unfs_node_create(name, 0);
     }
-    __sync_fetch_and_add(&nodep->open, 1);
     fd.id = nodep;
+    nodep->open++;
     FS_UNLOCK();
 
     return fd;
-}
-
-/**
- * Open/Create a file.
- * @param   fs          filesystem reference
- * @param   name        canonical name
- * @param   mode        open mode
- * @return  file descriptor reference or NULL if error.
- */
-unfs_fd_t unfs_file_open(unfs_fs_t fs, const char *name, unfs_mode_t mode)
-{
-    DEBUG_FN("%s", name);
-    return unfs_node_open(fs, name, mode, 0);
 }
 
 /**
@@ -961,12 +946,12 @@ int unfs_file_close(unfs_fd_t fd)
     DEBUG_FN("%s %d", nodep->name, nodep->open);
 
     FS_LOCK();
-    int open = __sync_fetch_and_sub(&nodep->open, 1);
-    if (nodep->isdir || open <= 0) {
+    if (nodep->isdir || (--nodep->open < 0)) {
         nodep->open = 0;
         err = EINVAL;
     }
     FS_UNLOCK();
+
     return err;
 }
 
@@ -1142,40 +1127,6 @@ u64 unfs_file_checksum(unfs_fd_t fd)
 }
 
 /**
- * Open/Create a directory.
- * @param   fs          filesystem reference
- * @param   name        canonical name
- * @param   mode        open mode
- * @return  directory descriptor reference or NULL if error.
- */
-unfs_fd_t unfs_dir_open(unfs_fs_t fs, const char *name, unfs_mode_t mode)
-{
-    DEBUG_FN("%s", name);
-    return unfs_node_open(fs, name, mode, 1);
-}
-
-/**
- * Close a directory.
- * @param   fd          directory descriptor reference
- * @return  0 if ok else error code.
- */
-int unfs_dir_close(unfs_fd_t fd)
-{
-    int err = 0;
-    unfs_node_t* nodep = fd.id;
-    DEBUG_FN("%s %d", nodep->name, nodep->open);
-
-    FS_LOCK();
-    int open = __sync_fetch_and_sub(&nodep->open, 1);
-    if (!nodep->isdir || open <= 0) {
-        nodep->open = 0;
-        err = EINVAL;
-    }
-    FS_UNLOCK();
-    return err;
-}
-
-/**
  * Check if name matched and add to directory listing.
  * @param   nodep       node pointer
  * @param   dlp         directory list pointer
@@ -1215,17 +1166,22 @@ static void unfs_dir_walk(struct tnode* root, unfs_dir_list_t* dlp)
 
 /**
  * Get a directory listing.
- * @param   fd          directory descriptor reference
+ * @param   fs          filesystem reference
+ * @param   name        canonical name
  * @return  an allocated directory list structure.
  */
-unfs_dir_list_t* unfs_dir_list(unfs_fd_t fd)
+unfs_dir_list_t* unfs_dir_list(unfs_fs_t fs, const char *name)
 {
-    unfs_node_t* nodep = fd.id;
-    DEBUG_FN("%s", nodep->name);
-    if (!nodep->open || !nodep->isdir)
+    DEBUG_FN("%s", name);
+    if (FS_ERROR(fs) || strlen(name) >= UNFS_MAXPATH)
         return NULL;
 
     FS_LOCK();
+    unfs_node_t* nodep = unfs_node_find(name);
+    if (!nodep || !nodep->isdir) {
+        FS_UNLOCK();
+        return NULL;
+    }
     u64 nodesize = nodep->size;
     unfs_dir_list_t* dlp = malloc(sizeof(*dlp) +
                                   (nodesize * sizeof(unfs_dir_entry_t)));
@@ -1811,4 +1767,3 @@ int unfs_format(const char* device, const char* label, int print)
     LOG_CLOSE();
     return err;
 }
-

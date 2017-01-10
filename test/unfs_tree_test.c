@@ -228,10 +228,9 @@ static void test_tree(int tid)
         snprintf(name + dlen, sizeof(name), "/dir%d", d);
         dlen = strlen(name);
         VERBOSE("# add dir %s\n", name);
-        unfs_fd_t fd = unfs_dir_open(fs, name, UNFS_OPEN_CREATE);
-        if (fd.error)
-            FATAL("Create directory %s (%s)", name, strerror(fd.error));
-        unfs_dir_close(fd);
+        int err = unfs_create(fs, name, 1, 1);
+        if (err)
+            FATAL("Create directory %s (%s)", name, strerror(err));
 
         // create files in each directory
         u64 size;
@@ -239,7 +238,7 @@ static void test_tree(int tid)
             size = random() & 0xffff;
             snprintf(name + dlen, sizeof(name), "/file%d", f);
             VERBOSE("# add file %s %ld 1\n", name, size);
-            fd = unfs_file_open(fs, name, UNFS_OPEN_CREATE);
+            unfs_fd_t fd = unfs_file_open(fs, name, UNFS_OPEN_CREATE);
             if (fd.error)
                 FATAL("Create %s (%s)", name, strerror(fd.error));
             unfs_file_resize(fd, size, &f);

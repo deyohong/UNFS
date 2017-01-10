@@ -150,25 +150,12 @@ static int ls_compare(const void* p1, const void* p2, void* arg)
  */
 static int cmd_ls(const char* arg)
 {
-    u64 size;
-    int isdir = 0;
-    if (!unfs_exist(fs, arg, &isdir, &size)) {
-        printf("%s does not exist\n", arg);
+    // get directory listing
+    unfs_dir_list_t* dlp = unfs_dir_list(fs, arg);
+    if (!dlp) {
+        printf("No such directory %s\n", arg);
         return 1;
     }
-    if (!isdir) {
-        printf("%-12s \t%lu\n", arg, size);
-        return 1;
-    }
-
-    // list directory content
-    unfs_fd_t fd = unfs_dir_open(fs, arg, 0);
-    if (fd.error) {
-        printf("Open directory %s (%s)\n", arg, strerror(fd.error));
-        return 1;
-    }
-    unfs_dir_list_t* dlp = unfs_dir_list(fd);
-    unfs_dir_close(fd);
     if (dlp->size == 0)
         return 0;
 
@@ -200,13 +187,11 @@ static int cmd_ls(const char* arg)
  */
 static int find_recursive(const char* dirname)
 {
-    unfs_fd_t fd = unfs_dir_open(fs, dirname, 0);
-    if (fd.error) {
-        printf("Open directory %s (%s)\n", dirname, strerror(fd.error));
+    unfs_dir_list_t* dlp = unfs_dir_list(fs, dirname);
+    if (!dlp) {
+        printf("No such directory %s\n", dirname);
         return 1;
     }
-    unfs_dir_list_t* dlp = unfs_dir_list(fd);
-    unfs_dir_close(fd);
 
     if (dlp->size == 0)
         return 0;

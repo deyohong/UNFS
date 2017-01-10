@@ -70,10 +70,10 @@ To run MongoDB on UNFS, use the following procedure (tested on CentOS):
 
         $ patch -p1 < /WORK/unfs/wiredtiger/unfs_wiredtiger.patch
 
-       And then build the WiredTiger code with snappy:
+       And then build the WiredTiger code with snappy and zlib:
 
         $ ./autogen.sh
-        $ ./configure --with-builtins=snappy
+        $ ./configure --with-builtins=snappy,zlib
         $ make -j16
         $ make install
 
@@ -163,12 +163,14 @@ e.g., export UNFS_DEVICE=/dev/nvme0n1 (or whatever block device name).
 Steps to run MongoDB smoke tests:
 
     $ cd /WORK/mongo
-
     $ buildscripts/resmoke.py --storageEngine=wiredTiger --suites=core
+    $ buildscripts/resmoke.py --storageEngine=wiredTiger --suites=dbtest
+    $ buildscripts/resmoke.py --storageEngine=wiredTiger --suites=unittests
 
 It should be noted that the UNVMe driver only suports one process accessing
-a given NVMe device, so the smoke test will fail at jsHeapLimit.js since the
-test will launch a second mongod process and fail to open the NVMe device
-that is already owned by another process.  However, all the core tests
-should pass running against a raw device (using the kernel space driver).
+a given NVMe device, so the smoke test will fail at jsHeapLimit.js (core suite)
+since the test will launch a second mongod process and thus fail to open the
+NVMe device that is already owned by another process.  To run the core suite
+against UNVMe device, remove jsHeapLimit.js from the jstests/core directory.
+The jsHeapLimit.js problem does not apply to raw device.
 

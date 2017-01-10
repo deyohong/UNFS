@@ -61,5 +61,5 @@ lint:
 clean:
 	@(for d in $(SUBDIRS); do $(MAKE) -C $$d clean; done)
 
-.PHONY: all raw install install.raw reinstall uninstall lint clean $(SUBDIRS)
+.PHONY: all install uninstall lint clean $(SUBDIRS)
 

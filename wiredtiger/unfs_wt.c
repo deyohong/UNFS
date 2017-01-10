@@ -65,7 +65,10 @@ typedef struct {
 } unfs_wt_file_system_t;
 
 /// File type name (only for debugging purpose)
-const char* wt_file_types[] = { "CHECKPOINT", "DATA", "DIRECTORY", "LOG", "REGULAR" };
+#ifdef UNFS_DEBUG
+static const char* wt_file_types[] = { "CHECKPOINT", "DATA", "DIRECTORY",
+                                       "LOG", "REGULAR" };
+#endif
 
 
 /**
@@ -227,15 +230,14 @@ static int unfs_wt_file_close(WT_FILE_HANDLE *fh, WT_SESSION *ses)
 {
     DEBUG_FN("%s", fh->name);
     unfs_wt_file_handle_t* uwfh = (unfs_wt_file_handle_t*)fh;
-    int err;
-    if (uwfh->isdir) {
-        err = unfs_dir_close(uwfh->unfd);
-    } else {
-        err = unfs_file_close(uwfh->unfd);
+    int err = 0;
+    if (!uwfh->isdir) {
+        if (!(err = unfs_file_close(uwfh->unfd))) {
+            (void) pthread_spin_destroy(&uwfh->lock);
+            free(uwfh->wtfh.name);
+            free(uwfh);
+        }
     }
-    (void) pthread_spin_destroy(&uwfh->lock);
-    free(uwfh->wtfh.name);
-    free(uwfh);
     return err;
 }
 
@@ -253,55 +255,66 @@ static int unfs_wt_fs_open(WT_FILE_SYSTEM* fs, WT_SESSION *ses,
                            const char *name, WT_FS_OPEN_FILE_TYPE type,
                            uint32_t flags, WT_FILE_HANDLE** fh)
 {
+    static unfs_wt_file_handle_t unfs_wt_dir = {
+                                    .isdir = 1,
+                                    .wtfh.fh_lock = unfs_wt_file_lock,
+                                    .wtfh.fh_read = unfs_wt_file_read,
+                                    .wtfh.fh_write = unfs_wt_file_write,
+                                    .wtfh.fh_size = unfs_wt_file_size,
+                                    .wtfh.fh_sync = unfs_wt_file_sync,
+                                    .wtfh.close = unfs_wt_file_close };
+
     DEBUG_FN("%s type=%s(%d) flags=%#x", name, wt_file_types[type], type, flags);
     *fh = 0;
     unfs_wt_file_system_t* unfs = (unfs_wt_file_system_t*)fs;
     char path[UNFS_MAXPATH];
     unfs_wt_path(path, sizeof(path)-1, unfs->homedir, unfs->home, name);
+
+    if (type == WT_FS_OPEN_FILE_TYPE_DIRECTORY) {
+        if (flags & WT_FS_OPEN_CREATE) {
+            if (unfs_create(unfs->unfs, path, 1, 1)) {
+                ERROR("Cannot create directory %s", path);
+                return EINVAL;
+            }
+        }
+        *fh = (WT_FILE_HANDLE*)&unfs_wt_dir;
+        return 0;
+    }
+
     unfs_mode_t mode = 0;
     if (flags & WT_FS_OPEN_CREATE)
         mode |= UNFS_OPEN_CREATE;
     if (flags & WT_FS_OPEN_EXCLUSIVE)
         mode |= UNFS_OPEN_EXCLUSIVE;
 
-    unfs_fd_t fd;
-    if (type == WT_FS_OPEN_FILE_TYPE_DIRECTORY)
-        fd = unfs_dir_open(unfs->unfs, path, mode);
-    else
-        fd = unfs_file_open(unfs->unfs, path, mode);
+    unfs_fd_t fd = unfs_file_open(unfs->unfs, path, mode);
     if (fd.error) {
         ERROR("%s (%s)", path, strerror(fd.error));
         return fd.error;
     }
 
     unfs_wt_file_handle_t* uwfh = calloc(1, sizeof(unfs_wt_file_handle_t));
-    uwfh->unfd = fd;
-    uwfh->isdir = (type == WT_FS_OPEN_FILE_TYPE_DIRECTORY);
     (void) pthread_spin_init(&uwfh->lock, PTHREAD_PROCESS_SHARED);
-
-    // register custom functions
-    if (!uwfh->wtfh.file_system) {
-        uwfh->wtfh.file_system = fs;
-        uwfh->wtfh.name = strdup(name);
-        uwfh->wtfh.fh_lock = unfs_wt_file_lock;
-        uwfh->wtfh.fh_read = unfs_wt_file_read;
-        uwfh->wtfh.fh_write = unfs_wt_file_write;
-        uwfh->wtfh.fh_size = unfs_wt_file_size;
-        uwfh->wtfh.fh_sync = unfs_wt_file_sync;
-        uwfh->wtfh.fh_truncate = unfs_wt_file_truncate;
-        uwfh->wtfh.close = unfs_wt_file_close;
-        /*
-        uwfh->wtfh.fh_advise = 0;
-        uwfh->wtfh.fh_allocate = 0;
-        uwfh->wtfh.fh_allocate_nolock = 0;
-        uwfh->wtfh.fh_map = 0;
-        uwfh->wtfh.fh_map_discard = 0;
-        uwfh->wtfh.fh_map_preload = 0;
-        uwfh->wtfh.fh_unmap = 0;
-        uwfh->wtfh.fh_sync_nowait = 0;
-        */
-    }
-
+    uwfh->wtfh.file_system = fs;
+    uwfh->wtfh.name = strdup(name);
+    uwfh->wtfh.fh_lock = unfs_wt_file_lock;
+    uwfh->wtfh.fh_read = unfs_wt_file_read;
+    uwfh->wtfh.fh_write = unfs_wt_file_write;
+    uwfh->wtfh.fh_size = unfs_wt_file_size;
+    uwfh->wtfh.fh_sync = unfs_wt_file_sync;
+    uwfh->wtfh.fh_truncate = unfs_wt_file_truncate;
+    uwfh->wtfh.close = unfs_wt_file_close;
+    /*
+    uwfh->wtfh.fh_advise = 0;
+    uwfh->wtfh.fh_allocate = 0;
+    uwfh->wtfh.fh_allocate_nolock = 0;
+    uwfh->wtfh.fh_map = 0;
+    uwfh->wtfh.fh_map_discard = 0;
+    uwfh->wtfh.fh_map_preload = 0;
+    uwfh->wtfh.fh_unmap = 0;
+    uwfh->wtfh.fh_sync_nowait = 0;
+     */
+    uwfh->unfd = fd;
     *fh = (WT_FILE_HANDLE*)uwfh;
     return 0;
 }
@@ -412,14 +425,11 @@ static int unfs_wt_fs_directory_list(WT_FILE_SYSTEM* fs, WT_SESSION* ses,
     char path[UNFS_MAXPATH];
     unfs_wt_path(path, sizeof(path)-1, unfs->homedir, unfs->home, dirname);
 
-    unfs_fd_t fd = unfs_dir_open(unfs->unfs, path, 0);
-    if (fd.error) {
-        ERROR("%s (%s)", path, strerror(fd.error));
-        return fd.error;
+    unfs_dir_list_t* dlp = unfs_dir_list(unfs->unfs, path);
+    if (!dlp) {
+        ERROR("No such directory %s", path);
+        return ENOENT;
     }
-
-    unfs_dir_list_t* dlp = unfs_dir_list(fd);
-    unfs_dir_close(fd);
     char** namelist = calloc(dlp->size + 1, sizeof(char*));
     size_t dirlen = strlen(dlp->name);
     size_t prefixlen = prefix ? strlen(prefix) : 0;
@@ -652,4 +662,3 @@ int unfs_wiredtiger_open(const char* home, WT_EVENT_HANDLER* errhandler,
     free(newconfig);
     return err;
 }
-
