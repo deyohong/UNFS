@@ -53,7 +53,7 @@
 typedef struct {
     char*                   device;         ///< device name
     u64                     blockcount;     ///< device block count
-    u64                     blocksize;      ///< device block size
+    u32                     blocksize;      ///< device block size
     int                     fd;             ///< device file descriptor
     unfs_header_t*          fsheader;       ///< filesystem header
 } unfs_raw_dev_t;
@@ -84,9 +84,12 @@ static unfs_header_t* unfs_dev_open(const char* device)
         FATAL("cannot get %s block count (%s)", device, strerror(errno));
     if (ioctl(dev.fd, BLKSSZGET, &dev.blocksize) < 0)
         FATAL("cannot get %s block size (%s)", device, strerror(errno));
+    if (dev.blocksize > UNFS_PAGESIZE)
+        FATAL("unsupported block size %d > %d", dev.blocksize, UNFS_PAGESIZE);
     dev.device = strdup(device);
 
     // calculate filesystem header based on disk capacity
+    dev.blockcount /= (dev.blocksize / 512);
     u64 pagecount = dev.blockcount / (UNFS_PAGESIZE / dev.blocksize);
     int bitsperpage = 8 << UNFS_PAGESHIFT;
     u64 datapage = (pagecount + bitsperpage - 1) / bitsperpage + 1;
@@ -98,7 +101,9 @@ static unfs_header_t* unfs_dev_open(const char* device)
         FATAL("mmap %lu pages failed", datapage);
     dev.fsheader = hp;
     dev.fsheader->blockcount = dev.blockcount;
+    dev.fsheader->blocksize = dev.blocksize;
     dev.fsheader->pagecount = pagecount;
+    dev.fsheader->pagesize = UNFS_PAGESIZE;
     dev.fsheader->datapage = datapage;
 
     return (dev.fsheader);

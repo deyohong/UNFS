@@ -197,6 +197,8 @@ typedef struct {
             char        version[16];        ///< filesystem version name
             u64         blockcount;         ///< number of blocks
             u64         pagecount;          ///< number of pages
+            u32         blocksize;          ///< block size
+            u32         pagesize;           ///< page size
             u64         datapage;           ///< start data page address
             u64         fdpage;             ///< next file entry page address
             u64         fdcount;            ///< number of file entries

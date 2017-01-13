@@ -1429,7 +1429,9 @@ void unfs_print_header(unfs_header_t* statp)
     printf("Label:       %s\n",   statp->label);
     printf("Version:     %s\n",   statp->version);
     printf("Block count: %#lx\n", statp->blockcount);
+    printf("Block size:  %#x\n", statp->blocksize);
     printf("Page count:  %#lx\n", statp->pagecount);
+    printf("Page size:   %#x\n", statp->pagesize);
     printf("Data page:   %#lx\n", statp->datapage);
     printf("FD page:     %#lx\n", statp->fdpage);
     printf("FD count:    %#lx\n", statp->fdcount);

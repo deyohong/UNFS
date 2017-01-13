@@ -111,7 +111,9 @@ static unfs_header_t* unfs_dev_open(const char* device)
     if (!dev.fsheader)
         FATAL("unvme_alloc header %lu pages", datapage);
     dev.fsheader->blockcount = ns->blockcount;
+    dev.fsheader->blocksize = ns->blocksize;
     dev.fsheader->pagecount = pagecount;
+    dev.fsheader->pagesize = ns->pagesize;
     dev.fsheader->datapage = datapage;
 
     // setup IO queues and memory

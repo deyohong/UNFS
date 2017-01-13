@@ -40,7 +40,7 @@ all: $(SUBDIRS)
 $(SUBDIRS):
 	$(MAKE) -C $@
 
-install: all uninstall
+install: uninstall all
 	mkdir -p $(INSTALLDIR)/include $(INSTALLDIR)/lib $(INSTALLDIR)/bin 
 	/usr/bin/install -m644 src/unfs.h $(INSTALLDIR)/include
 	/usr/bin/install -m755 test/unfs_{format,check,shell} $(INSTALLDIR)/bin
