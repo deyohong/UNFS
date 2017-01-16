@@ -1,8 +1,8 @@
 diff --git a/src/conn/conn_api.c b/src/conn/conn_api.c
-index 474b8bb..800ce01 100644
+index 5061724..0dd266f 100644
 --- a/src/conn/conn_api.c
 +++ b/src/conn/conn_api.c
-@@ -2057,6 +2057,45 @@ wiredtiger_dummy_session_init(
+@@ -2058,6 +2058,39 @@ wiredtiger_dummy_session_init(
  	session->iface.strerror = __wt_session_strerror;
  }
  
@@ -10,7 +10,7 @@ index 474b8bb..800ce01 100644
 + * Allocate and convert a wiredtiger config string that points to UNFS.
 + * The returned config string must be free by caller.
 + */
-+static char* unfs_config(const char* home, const char* config)
++static char* unfs_config(const char* home, const char* config, const char* device)
 +{
 +	if (!home) home = "";
 +	if (!config) config = "";
@@ -21,12 +21,6 @@ index 474b8bb..800ce01 100644
 +
 +	// check if string has already been converted
 +	if (!strstr(config, "unfs_wiredtiger_init")) {
-+		const char* device = getenv("UNFS_DEVICE");
-+		if (!device) {
-+			fprintf(stderr, "UNFS_DEVICE variable not set\n");
-+			abort();
-+		}
-+
 +		// lazy check for extensions string
 +		const char* ext = strstr(config, "extensions=[");
 +		if (ext) {
@@ -48,21 +42,25 @@ index 474b8bb..800ce01 100644
  /*
   * wiredtiger_open --
   *	Main library entry point: open a new connection to a WiredTiger
-@@ -2066,6 +2105,9 @@ int
+@@ -2067,6 +2100,13 @@ int
  wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
      const char *config, WT_CONNECTION **wt_connp)
  {
-+	char* unfsconfig = unfs_config(home, config);
-+	config = unfsconfig;
++	char* unfsconfig = NULL;
++	const char* device = getenv("UNFS_DEVICE");
++        if (device) {
++        	unfsconfig = unfs_config(home, config, device);
++		config = unfsconfig;
++	}
 +
  	static const WT_CONNECTION stdc = {
  		__conn_async_flush,
  		__conn_async_new_op,
-@@ -2455,6 +2497,8 @@ err:	/* Discard the scratch buffers. */
+@@ -2456,6 +2496,8 @@ err:	/* Discard the scratch buffers. */
  	__wt_scr_free(session, &i3);
  
  	__wt_free(session, merge_cfg);
-+	free(unfsconfig);
++	if (unfsconfig) free(unfsconfig);
 +
  	/*
  	 * We may have allocated scratch memory when using the dummy session or

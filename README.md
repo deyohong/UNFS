@@ -36,7 +36,7 @@ CentOS 6 or 7), etc.
 Build Packages
 ==============
 
-To run MongoDB on UNFS, use the following procedure (tested on CentOS):
+To run MongoDB on UNFS, use the following procedure (as tested on CentOS):
 
     1) Download UNFS code (assume the base working directory is /WORK):
 
@@ -44,12 +44,11 @@ To run MongoDB on UNFS, use the following procedure (tested on CentOS):
         $ git clone https://github.com/MicronSSD/unfs.git
 
 
-       To run UNFS wthout UNVMe using only raw block device, comment
-       out "CPPFLAGS += -DUNFS_UNVME" in Makefile.def, in which case,
-       skip Step 2 below.
+       To build UNFS wthout UNVMe, i.e. using only raw block device,
+       comment out "CPPFLAGS += -DUNFS_UNVME" in Makefile.def.
 
-       To run UNFS without WiredTiger and MongoDB, comment out "EXTDIRS"
-       in Makefile.def, in which case, skip Step 3 and 5 below.
+       To build UNFS without WiredTiger, comment out the "EXTDIRS"
+       list in Makefile.def, in which case, skip Step 3 and 5 below.
 
 
     2) Download and install UNVMe driver:
@@ -66,11 +65,11 @@ To run MongoDB on UNFS, use the following procedure (tested on CentOS):
         $ git clone https://github.com/wiredtiger/wiredtiger.git -b develop
         $ cd wiredtiger
 
-       Patch the WiredTiger code for UNFS usage:
+       Patch the WiredTiger code for UNFS support:
 
-        $ patch -p1 < /WORK/unfs/wiredtiger/unfs_wiredtiger.patch
+        $ patch -p1 -i /WORK/unfs/wiredtiger/unfs_wiredtiger.patch
 
-       And then build the WiredTiger code with snappy and zlib:
+       And then build the WiredTiger code with snappy and zlib enabled:
 
         $ ./autogen.sh
         $ ./configure --with-builtins=snappy,zlib
@@ -78,14 +77,14 @@ To run MongoDB on UNFS, use the following procedure (tested on CentOS):
         $ make install
 
 
-    4) Build and install UNFS:
+    4) Now build UNFS:
 
         $ cd /WORK/unfs
         $ make install
 
 
     5) Download and build MongoDB to use the custom WiredTiger engine
-       with UNFS (bypassing the WiredTiger version that comes with MongoDB):
+       with UNFS (overriding the WiredTiger code that comes with MongoDB):
 
         $ cd /WORK
         $ git clone https://github.com/mongodb/mongo.git -b v3.4
@@ -144,7 +143,6 @@ MongoDB 3.4 core features, however, have been tested with UNFS.
 Steps to setup UNFS (with UNVMe) and run mongod:
 
     $ unvme-setup
-    # Setup all NVMe devices for UNVMe driver
     07:00.0 Intel Corporation DC P3700 SSD [2.5" SFF] - (enabled for UNVMe)
 
     $ export UNFS_DEVICE=07:00.0
@@ -156,8 +154,11 @@ Steps to setup UNFS (with UNVMe) and run mongod:
     ...
 
 Note that running unfs_format is equivalent to invoking mkfs on a new device.
-For using raw device, skip unvme-setup and specify the device name instead,
-e.g., export UNFS_DEVICE=/dev/nvme0n1 (or whatever block device name).
+
+To run UNFS with raw device, invoke command 'unvme-setup reset' to restore
+the binding of NVMe device to the kernel space driver, and then export the
+the actual device name (e.g. /dev/nvme0n1) instead, e.g.,
+export UNFS_DEVICE=/dev/nvme0n1.
 
 
 Steps to run MongoDB smoke tests:
@@ -167,10 +168,55 @@ Steps to run MongoDB smoke tests:
     $ buildscripts/resmoke.py --storageEngine=wiredTiger --suites=dbtest
     $ buildscripts/resmoke.py --storageEngine=wiredTiger --suites=unittests
 
+
 It should be noted that the UNVMe driver only suports one process accessing
 a given NVMe device, so the smoke test will fail at jsHeapLimit.js (core suite)
 since the test will launch a second mongod process and thus fail to open the
 NVMe device that is already owned by another process.  To run the core suite
-against UNVMe device, remove jsHeapLimit.js from the jstests/core directory.
-The jsHeapLimit.js problem does not apply to raw device.
+successfully using UNVMe device, remove jsHeapLimit.js from the jstests/core
+directory.  The jsHeapLimit.js problem does not apply to UNFS raw device.
+
+It should also be noted that running these small tests using UNVMe driver 
+will take many times longer.  This is because each individual test application
+will have to first load the user space driver and initialize the device
+every time before the actual test is run.
+
+
+
+Run YCSB Benchmarks
+===================
+
+Assume YCSB 0.12.0 is already installed on the system (in /opt/ycsb),
+a shell script unfs-mongo-ycsb is provided for running YCSB benchmarks.
+
+
+To run YCSB on MongoDB with UNVMe device:
+
+    $ cd /WORK/mongo
+    $ unvme-setup
+    07:00.0 Intel Corporation DC P3700 SSD [2.5" SFF] - (enabled for UNVMe)
+    $ /WORK/unfs/wiredtiger/unfs-mongo-ycsb 07:00.0
+
+
+To run YCSB on MongoDB with raw device:
+
+    $ cd /WORK/mongo
+    $ unvme-setup reset
+    $ /WORK/unfs/wiredtiger/unfs-mongo-ycsb /dev/nvme0n1
+
+
+To run YCSB on MongoDB with native XFS filesystem:
+
+    $ cd /WORK/mongo
+    $ mkfs -t xfs /dev/nvme0n1
+    $ mount /dev/nvme0n1 /data
+    $ /WORK/unfs/wiredtiger/unfs-mongo-ycsb
+
+
+By default, unfs-mongo-ycsb script will load and test 1,000,000 records
+with 1, 8, 16, and 32 threads using the mongodb-async driver.
+
+It should be noted that UNFS/UNVMe stack is primarily designed to
+demonstrate a paradigm shift for future 3D-Crosspoint SSD products and
+may not perform well with current NAND based SSD technology.
 
