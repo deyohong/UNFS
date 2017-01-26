@@ -39,9 +39,9 @@
 
 #include <wiredtiger_ext.h>
 
-int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config);
-char* unfs_wiredtiger_config(const char* home, const char* config);
-int unfs_wiredtiger_open(const char* home, WT_EVENT_HANDLER* errhandler,
-                         const char* config, WT_CONNECTION** conn);
+int unfs_wt_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config);
+char* unfs_wt_config(const char* home, const char* config);
+int unfs_wt_open(const char* home, WT_EVENT_HANDLER* errhandler,
+                 const char* config, WT_CONNECTION** conn);
 
 #endif	//_UNFS_WT_H

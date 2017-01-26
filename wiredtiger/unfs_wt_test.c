@@ -109,7 +109,8 @@ int main(int argc, char** argv)
     // examples/c/ex_filesystem.c with changes to the config string
     // in order to verify basic WiredTiger on UNFS functionalities.
     //=======================================================================
-    char* config = unfs_wiredtiger_config(home, "create,log=(enabled=true)");
+    char* config = unfs_wt_config(home, "create,log=(enabled=true)");
+    printf("%s\n", config);
     if ((ret = wiredtiger_open(home, NULL, config, &conn)) != 0) {
         fprintf(stderr, "wiredtiger_open %s: %s\n", home, wiredtiger_strerror(ret));
         free(config);

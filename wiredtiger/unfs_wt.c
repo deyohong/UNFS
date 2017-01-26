@@ -61,7 +61,7 @@ typedef struct {
     WT_FILE_SYSTEM          wtfs;           ///< WT filesystem object
     unfs_fs_t               unfs;           ///< UNFS filesystem reference
     char*                   homedir;        ///< home directory absolute path
-    char*                   home;           ///< home directory relative path
+    const char*             home;           ///< home relative path name
 } unfs_wt_file_system_t;
 
 /// File type name (only for debugging purpose)
@@ -486,8 +486,6 @@ static int unfs_wt_fs_terminate(WT_FILE_SYSTEM* fs, WT_SESSION* ses)
     unfs_wt_file_system_t* unfs = (unfs_wt_file_system_t*)fs;
     DEBUG_FN();
     unfs_close(unfs->unfs);
-    if (*unfs->home)
-        free(unfs->home);
     free(unfs->homedir);
     free(unfs);
     return 0;
@@ -499,14 +497,12 @@ static int unfs_wt_fs_terminate(WT_FILE_SYSTEM* fs, WT_SESSION* ses)
  * @param   config      config argument
  * @return  0 if ok else error code.
  */
-int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
+int unfs_wt_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
 {
     // parse config arguments
+    int err;
     WT_CONFIG_PARSER *parser;
     WT_CONFIG_ITEM key, val;
-    int err;
-    char* device = 0;
-    char* home = "";
     WT_EXTENSION_API* wtext = conn->get_extension_api(conn);
 
     if ((err = wtext->config_parser_open_arg(wtext, NULL, config, &parser))) {
@@ -516,20 +512,19 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
 
     while ((err = parser->next(parser, &key, &val)) == 0) {
         if (strncmp("device", key.str, key.len) == 0) {
-            device = strndup(val.str, val.len);
+            setenv("UNFS_DEVICE", val.str, 1);
         } else if (strncmp("nsid", key.str, key.len) == 0) {
             setenv("UNFS_NSID", val.str, 1);
         } else if (strncmp("qcount", key.str, key.len) == 0) {
             setenv("UNFS_QCOUNT", val.str, 1);
         } else if (strncmp("qdepth", key.str, key.len) == 0) {
             setenv("UNFS_QDEPTH", val.str, 1);
-        } else if (strncmp("home", key.str, key.len) == 0) {
-            home = strndup(val.str, val.len);
         } else {
             ERROR("unknown config: %s", key.str);
             return EINVAL;
         }
     }
+
     if (err != WT_NOTFOUND) {
         ERROR("parser.next: %s", wiredtiger_strerror(err));
         return err;
@@ -538,15 +533,21 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
         ERROR("parser.close: %s", wiredtiger_strerror(err));
         return err;
     }
+
+    char* device = getenv("UNFS_DEVICE");
     if (!device) {
-        ERROR("unspecified device");
+        ERROR("missing device name");
         return EINVAL;
     }
 
     // canonicalize the home directory path
+    const char* home = conn->get_home(conn);
+    if (!home) {
+        ERROR("missing home directory");
+        return EINVAL;
+    }
     char homedir[UNFS_MAXPATH] = "/";
-    if (*home)
-        unfs_wt_path(homedir, sizeof(homedir), "/", "", home);
+    unfs_wt_path(homedir, sizeof(homedir), "/", "", home);
 
     // open the UNFS filesystem
     unfs_fs_t fs = unfs_open(device);
@@ -554,7 +555,6 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
         ERROR("unfs_open %s failed", device);
         return ENODEV;
     }
-    free(device);
 
     // create and register WT custom filesystem
     unfs_wt_file_system_t* unfs = calloc(1, sizeof(unfs_wt_file_system_t));
@@ -575,14 +575,12 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
         return err;
     }
 
-#if 1
-    // workaround MongoDB bug https://jira.mongodb.org/browse/SERVER-27571
+    // workaround MongoDB bug SERVER-27571
     strcat(homedir, "/journal");
     if (unfs_create(fs, homedir, 1, 1)) {
         ERROR("Cannot create directory %s", homedir);
         return EINVAL;
     }
-#endif
 
     return 0;
 }
@@ -594,39 +592,25 @@ int unfs_wiredtiger_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
  * @param   config          original config string
  * @return  newly config string for UNFS or NULL if error.
  */
-char* unfs_wiredtiger_config(const char* home, const char* config)
+char* unfs_wt_config(const char* home, const char* config)
 {
-    if (!home)
-        home = "";
     if (!config)
         config = "";
     size_t len = strlen(config);
-    char* newconfig = malloc(len + strlen(home) + 256);
+    char* newconfig = malloc(len + 64);
     strcpy(newconfig, config);
 
     // check if string has already been converted
-    if (!strstr(config, "unfs_wiredtiger_init")) {
-        const char* device = getenv("UNFS_DEVICE");
-        if (!device) {
-            ERROR("UNFS_DEVICE environment variable not set");
-            return NULL;
-        }
-
-        // lazy check for extensions string
+    if (!strstr(newconfig, "unfs_wt_init")) {
+        // lazy check for existing extensions to append or create string
         const char* ext = strstr(config, "extensions=[");
         if (ext) {
-            len = ext - config + 12;
-            strncpy(newconfig, config, len);
+            sprintf(newconfig + (ext - config + 12), "libunfswt.so="
+                    "{entry=unfs_wt_init,early_load=true},%s]", ext + 12);
         } else {
-            sprintf(newconfig + len, ",extensions=[");
-            len += 13;
+            sprintf(newconfig + len, ",extensions=[libunfswt.so="
+                    "{entry=unfs_wt_init,early_load=true}]");
         }
-        sprintf(newconfig + len, "local={entry=unfs_wiredtiger_init,"
-                "early_load=true,config=(device=\"%s\",home=\"%s\")}]",
-                device, home);
-        if (ext)
-            sprintf(newconfig + strlen(newconfig) - 1, ",%s", ext + 12);
-
         DEBUG_FN("OLD: %s", config);
         DEBUG_FN("NEW: %s", newconfig);
     }
@@ -654,11 +638,12 @@ char* unfs_wiredtiger_config(const char* home, const char* config)
  * @param   conn        connection pointer
  * @return  0 if ok else error code.
  */
-int unfs_wiredtiger_open(const char* home, WT_EVENT_HANDLER* errhandler,
+int unfs_wt_open(const char* home, WT_EVENT_HANDLER* errhandler,
                          const char* config, WT_CONNECTION** conn)
 {
-    char* newconfig = unfs_wiredtiger_config(home, config);
+    char* newconfig = unfs_wt_config(home, config);
     int err = wiredtiger_open(home, errhandler, newconfig, conn);
     free(newconfig);
     return err;
 }
+

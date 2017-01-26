@@ -174,7 +174,6 @@ static void unfs_dev_page_free(unfs_ioc_t ioc, void* buf, u32 pc)
  * @param   buf         data buffer
  * @param   pa          page address
  * @param   pc          page count
- * 
  */
 static void unfs_dev_read(unfs_ioc_t ioc, void* buf, u64 pa, u32 pc)
 {

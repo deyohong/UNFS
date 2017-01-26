@@ -165,13 +165,15 @@ typedef struct {
 } unfs_fd_t;
 
 /// Device dependent IO context
-typedef u64 unfs_ioc_t;
+typedef u32 unfs_ioc_t;
 
 /// Client filesystem handle
 typedef u64 unfs_fs_t;
 
 /// Device I/O implementation structure
 typedef struct {
+    /// device name;
+    char*           name;
     /// close device
     void            (*close)();
     /// allocate IO context

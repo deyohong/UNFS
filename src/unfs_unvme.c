@@ -89,9 +89,9 @@ static unfs_header_t* unfs_dev_open(const char* device)
     int qpac = env ? atoi(env) : 4096;
 
     // limit max qcount to a few bits less than the allocated mask size
-    if (qcount > 60)
-        FATAL("only support max of UNFS_QCOUNT 60");
-    dev.qallmask = (u64)-1L >> (64 - qcount);
+    if (qcount > (sizeof(dev.qallmask) * 8))
+        FATAL("UNFS_QCOUNT %d exceeds limit %d", qcount, sizeof(dev.qallmask) * 8);
+    dev.qallmask = (u64)~0L >> (64 - qcount);
 
     // open NVMe device
     const unvme_ns_t* ns = unvme_open(device, nsid, qcount, qdepth);

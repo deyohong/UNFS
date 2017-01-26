@@ -33,17 +33,16 @@ include ../Makefile.def
 
 TARGETS = unfs_format unfs_check unfs_shell unfs_rmw_test unfs_tree_test
 
-CPPFLAGS += -I../src
-LDFLAGS += -L../src
-LDLIBS += -lpthread -lunfs
-
 INCS := $(wildcard ../src/*.h)
 OBJS := $(patsubst %.c,%.o,$(wildcard *.c))
+
+CPPFLAGS += -I../src
+LDLIBS += -lunvme -lpthread
 
 
 all: $(TARGETS)
 
-$(TARGETS):
+$(TARGETS): ../src/libunfs.a
 
 $(OBJS): $(INCS)
 

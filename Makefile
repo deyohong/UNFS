@@ -33,7 +33,10 @@ include Makefile.def
 
 INSTALLDIR ?= /usr/local
 
-SUBDIRS := src test doc $(EXTDIRS)
+SUBDIRS := src test doc
+ifneq (,$(WIREDTIGERDIR))
+SUBDIRS += wiredtiger
+endif
 
 all: $(SUBDIRS)
 
@@ -46,7 +49,7 @@ install: uninstall all
 	/usr/bin/install -m755 test/unfs_{format,check,shell} $(INSTALLDIR)/bin
 	/usr/bin/install -m644 src/libunfs*.a $(INSTALLDIR)/lib
 	/usr/bin/install -m755 src/libunfs*.so $(INSTALLDIR)/lib
-ifneq (,$(findstring wiredtiger,$(EXTDIRS)))
+ifneq (,$(WIREDTIGERDIR))
 	/usr/bin/install -m755 wiredtiger/libunfswt.so $(INSTALLDIR)/lib
 endif
 

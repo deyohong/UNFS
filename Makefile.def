@@ -31,18 +31,16 @@
 
 SHELL := /bin/sh
 
-# Set the optimization flag
-COPT ?= -O2
-
+# Default compilation flags
 CPPFLAGS += -D_GNU_SOURCE
-CFLAGS += $(COPT) -Wall -fPIC
+CFLAGS += -Wall -fPIC -O2
 
-# To turn on debug message logging
+# To turn on debug logging
 #CPPFLAGS += -DUNFS_DEBUG
 
-# To enable UNVMe support
+# To build UNFS with UNVMe support
 CPPFLAGS += -DUNFS_UNVME
 
-# Specify extended modules to build
-EXTDIRS = wiredtiger
+# To build WiredTiger plugin library for MongoDB 3.4
+WIREDTIGERDIR = /opt/wiredtiger
 

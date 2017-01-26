@@ -45,9 +45,9 @@ $(LIBUNFS): unfs.o unfs_unvme.o unfs_raw.o
 
 $(LIBUNFS_SO): $(LIBUNFS)
 ifeq (,$(findstring UNFS_UNVME,$(CPPFLAGS)))
-	$(CC) -shared $^ -o $@
+	$(CC) -shared -rdynamic -Wl,--whole-archive $^ -Wl,--no-whole-archive -o $@
 else
-	$(CC) -shared -Wl,--whole-archive $^ -lunvme -Wl,--no-whole-archive -o $@
+	$(CC) -shared -rdynamic -Wl,--whole-archive $^ -lunvme -Wl,--no-whole-archive -o $@
 endif
 
 $(OBJS): $(INCS)

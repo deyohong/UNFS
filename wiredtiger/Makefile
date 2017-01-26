@@ -34,22 +34,23 @@ include ../Makefile.def
 TARGET = unfs_wt_test
 LIBTARGET = libunfswt.so
 
-CPPFLAGS += -I../src
-LDLIBS += -lwiredtiger
-
 INCS := $(wildcard ../src/*.h)
 OBJS := $(patsubst %.c,%.o,$(wildcard *.c))
+
+CPPFLAGS += -I../src -I$(WIREDTIGERDIR)
+LDFLAGS += -L$(WIREDTIGERDIR)/.libs -Wl,-rpath=$(WIREDTIGERDIR)/.libs,-rpath=$(CURDIR)
+LDLIBS += -lwiredtiger
 
 
 all: $(TARGET)
 
-$(TARGET): $(TARGET).o $(LIBTARGET)
+$(TARGET): $(LIBTARGET)
 
-$(LIBTARGET): unfs_wt.o
+$(LIBTARGET): unfs_wt.o ../src/libunfs.a
 ifeq (,$(findstring UNFS_UNVME,$(CPPFLAGS)))
-	$(CC) -shared -Wl,--whole-archive $^ ../src/libunfs.a -Wl,--no-whole-archive -o $@
+	$(CC) -shared -rdynamic -Wl,--whole-archive $^ -Wl,--no-whole-archive -o $@
 else
-	$(CC) -shared -Wl,--whole-archive $^ ../src/libunfs.a -lunvme -Wl,--no-whole-archive -o $@
+	$(CC) -shared -rdynamic -Wl,--whole-archive $^ -lunvme -Wl,--no-whole-archive -o $@
 endif
 
 $(OBJS): $(INCS)

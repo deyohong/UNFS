@@ -9,21 +9,28 @@
 #
 # Run on UNFS using UNVMe driver:
 #   $ unvme-setup
-#   $ unfs-mongo-ycsb 07:00.0
+#   $ export UNFS_DEVICE 07:00.0
+#   $ unfs-mongo-ycsb
 #
 # Run on UNFS using raw device:
 #   $ unvme-setup reset
-#   $ unfs-mongo-ycsb /dev/nvme0n1
+#   $ export UNFS_DEVICE /dev/nvme0n1
+#   $ unfs-mongo-ycsb
 #
 # Run on native filesystem (assume XFS):
+#   $ unvme-setup reset
+#   $ unset UNFS_DEVICE
 #   $ mkfs -t xfs /dev/nvme0n1
 #   $ mount /dev/nvme0n1 /data
 #   $ unfs-mongo-ycsb
 #
 
 # Default test options
-: ${THREADS="1 8 16 32"}
+: ${THREADS="1 8 16"}
 : ${OPCOUNT=1000000}
+: ${READS="95 50 5"}
+: ${MONGODRV=mongodb}
+#: ${MONGODRV=mongodb-async}
 
 # Default test directories
 : ${YCSB=/opt/ycsb/bin/ycsb}
@@ -48,7 +55,6 @@ PROG=$(basename $0)
 USAGE="Usage: ${PROG} [DEVICE_NAME] [KEY=VALUE]..."
 
 # Parsing test arguments
-unset UNFS_DEVICE
 for i in $@; do
     case $i in
     [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f].[0-9A-Fa-f])
@@ -79,10 +85,12 @@ done
 case ${UNFS_DEVICE} in
 [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f].[0-9A-Fa-f])
     echo "Run YCSB on MongoDB with UNFS UNVMe Device ${UNFS_DEVICE}"
+    CONFIG='--wiredTigerEngineConfigString extensions=[libunfswt.so={entry=unfs_wt_init,early_load=true}]'
     LOGSUFFIX="unvme.log"
     ;;
 /dev/*)
     echo "Run YCSB on MongoDB with UNFS Raw Device ${UNFS_DEVICE}"
+    CONFIG='--wiredTigerEngineConfigString extensions=[libunfswt.so={entry=unfs_wt_init,early_load=true}]'
     LOGSUFFIX="raw.log"
     ;;
 *)
@@ -97,8 +105,6 @@ OPCOUNT=$(echo ${YCSBTEXT} | sed 's/.*operationcount=\([0-9]\+\).*/\1/')
 # Log directories
 LOGPREFIX=${LOGDIR}/${HOSTNAME}
 mkdir -p ${LOGDIR}
-MONGODLOG=${LOGPREFIX}.${OPCOUNT}.mongod.${LOGSUFFIX}
-rm -f ${MONGODLOG}
 
 # Generate workload file
 WORKLOAD=${LOGPREFIX}.${OPCOUNT}.workload
@@ -117,11 +123,12 @@ check_status()
     err=1
     for i in {1..30}; do
         sleep 5
-        if [ -n "$(tail -5 $1 | grep "$2")" ]; then
+        if [ -n "$(tail -10 $1 | grep "$2")" ]; then
             err=0
             break
         fi
-        if [ -n "$(egrep 'Aborted:|BACKTRACE|Connection refused|No such file' $1)" ]; then
+        if [ -n "$(egrep -i 'Aborted:|aborting|terminating|BACKTRACE|Connection refused' $1)" ]; then
+            sleep 5
             break
         fi
     done
@@ -135,8 +142,6 @@ check_status()
 run_mongod()
 {
     echo -e "\n${MONGODLOG}"
-
-    echo "THREADS $1" | tee -a ${MONGODLOG}
     rm -rf ${DBPATH}
     mkdir -p ${DBPATH}
     if [ -n "${UNFS_DEVICE}" ]; then
@@ -144,7 +149,7 @@ run_mongod()
         unfs_format | tee -a ${MONGODLOG}
     fi
 
-    cmd="numactl --interleave=all ${MONGOD} --quiet --dbpath ${DBPATH}"
+    cmd="numactl --interleave=all ${MONGOD} --quiet --dbpath ${DBPATH} ${CONFIG}"
     echo -e "\n=== ${cmd}" | tee -a ${MONGODLOG}
     ${cmd} >> ${MONGODLOG} 2>&1 &
     check_status ${MONGODLOG} 'waiting for connections'
@@ -169,7 +174,7 @@ load_ycsb()
         echo -e "\nSkip ${logfile}..."
     else
         echo -e "\n${logfile}"
-        cmd="${YCSB} load mongodb-async -P ${WORKLOAD} -threads $1"
+        cmd="${YCSB} load ${MONGODRV} -P ${WORKLOAD} -threads $1"
         echo "=== ${cmd}" | tee ${logfile}
         echo "+++ $(date)" | tee -a ${logfile}
         ${cmd} 2>&1 | tee -a ${logfile}
@@ -181,14 +186,16 @@ load_ycsb()
 
 run_ycsb()
 {
-    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.r$2w$3.${LOGSUFFIX}
+    rp=$(printf '%02d' $2)
+    wp=$(printf '%02d' $((100-$2)))
+    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.r${rp}w${wp}.${LOGSUFFIX}
 
     # check if test has run successfully
     if [ -e ${logfile} ] && [ -n $(grep '[UPDATE], Return=OK,' ${logfile}) ]; then
         echo -e "\nSkip ${logfile}..."
     else
         echo -e "\n${logfile}"
-        cmd="${YCSB} run mongodb-async -P ${WORKLOAD} -threads $1 -p readproportion=.$2 -p updateproportion=.$3"
+        cmd="${YCSB} run ${MONGODRV} -P ${WORKLOAD} -threads $1 -p readproportion=.${rp} -p updateproportion=.${wp}"
         echo "=== ${cmd}" | tee ${logfile}
         echo "+++ $(date)" | tee -a ${logfile}
         ${cmd} 2>&1 | tee -a ${logfile}
@@ -204,11 +211,13 @@ killall -q mongod
 sleep 2
 
 for t in ${THREADS}; do
+    MONGODLOG=${LOGPREFIX}.${OPCOUNT}.mongod.t$t.${LOGSUFFIX}
+    rm -f ${MONGODLOG}
     run_mongod $t
     load_ycsb $t
-    run_ycsb $t 95 05
-    run_ycsb $t 50 50
-    run_ycsb $t 05 95
+    for r in ${READS}; do
+        run_ycsb $t $r
+    done
     killall mongod
     check_status ${MONGODLOG} 'shutting down with code:0'
     echo -e "============\n" >> ${MONGODLOG}

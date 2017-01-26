@@ -45,8 +45,8 @@
     #endif
     #include <unvme_log.h>
 
-    #define LOG_OPEN()              log_open("/dev/shm/unfs.log", "w");
-    #define LOG_CLOSE()             log_close();
+    #define LOG_OPEN()              log_open("/dev/shm/unfs.log", "w")
+    #define LOG_CLOSE()             log_close()
 #else
     #include <stdio.h>
 
