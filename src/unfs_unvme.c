@@ -88,9 +88,9 @@ static unfs_header_t* unfs_dev_open(const char* device)
     env = getenv("UNFS_QPAC");
     int qpac = env ? atoi(env) : 4096;
 
-    // limit max qcount to a few bits less than the allocated mask size
-    if (qcount > (sizeof(dev.qallmask) * 8))
-        FATAL("UNFS_QCOUNT %d exceeds limit %d", qcount, sizeof(dev.qallmask) * 8);
+    // limit max qcount to the allocated mask size
+    if (qcount > (sizeof(dev.qiocmask) * 8))
+        FATAL("UNFS_QCOUNT %d exceeds limit %d", qcount, sizeof(dev.qiocmask) * 8);
     dev.qallmask = (u64)~0L >> (64 - qcount);
 
     // open NVMe device
@@ -161,13 +161,14 @@ static unfs_ioc_t unfs_dev_ioc_alloc()
             q = 0;
         u64 mask = 1L << q;
         u64 qiocmask = __sync_fetch_and_or(&dev.qiocmask, mask);
-        if ((qiocmask & mask) == 0L)
-            break;
+        if ((qiocmask & mask) == 0L) {
+            dev.qnext = q;
+            return (unfs_ioc_t)q;
+        }
         if (dev.qiocmask == dev.qallmask)
             sched_yield();
     }
-    dev.qnext = q;
-    return (unfs_ioc_t)q;
+    // NOT REACHED
 }
 
 /**
@@ -190,7 +191,7 @@ static void unfs_dev_ioc_free(unfs_ioc_t ioc)
  */
 static void* unfs_dev_page_alloc(unfs_ioc_t ioc, u32* pc)
 {
-    // just need to support 1 allocation request per queue for now
+    // only support 1 allocation request per queue
     u64 mask = 1L << ioc;
     u64 qbufmask = __sync_fetch_and_or(&dev.qbufmask, mask);
     if ((qbufmask & mask) != 0L)

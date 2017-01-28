@@ -307,9 +307,9 @@ int main(int argc, char** argv)
     u64 fdpage = hdr.pagecount - (fdcount + 1) * UNFS_FILEPC;
     if (hdr.fdpage != fdpage)
         FATAL("FD page %#lx expect %#lx", hdr.fdcount, fdpage);
-    u64 mapuse = fdcount * UNFS_FILEPC + thread_count;
-    if (hdr.mapuse != mapuse)
-        FATAL("Map use %#lx expect %#lx", hdr.mapuse, mapuse);
+    u64 pagefree = hdr.pagecount - (fdcount * UNFS_FILEPC + thread_count);
+    if (hdr.pagefree != pagefree)
+        FATAL("Free pages %#lx expect %#lx", hdr.pagefree, pagefree);
 
     if (unfs_check(device))
         return 1;

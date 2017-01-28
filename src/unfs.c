@@ -55,22 +55,32 @@
 void unfs_cleanup();
 
 /// Convert byte length into page count
-#define PAGECOUNT(len)  (((len) + UNFS_PAGESIZE - 1) >> UNFS_PAGESHIFT)
+#define PAGECOUNT(len)      (((len) + UNFS_PAGESIZE - 1) >> UNFS_PAGESHIFT)
 
 /// Check for filesystem context error
-#define FS_CHECK(fs)    ((fs >> 16) != unfs.fsid)
+#define FS_CHECK(fs)        ((fs >> 16) != unfs.fsid)
 
 /// Filesystem write lock
-#define FS_WRLOCK()     pthread_rwlock_wrlock(&unfs.lock)
+#define FS_WRLOCK()         pthread_rwlock_wrlock(&unfs.lock)
 
 /// Filesystem read lock
-#define FS_RDLOCK()     pthread_rwlock_rdlock(&unfs.lock)
+#define FS_RDLOCK()         pthread_rwlock_rdlock(&unfs.lock)
 
 /// Filesystem try write lock
-#define FS_TRYLOCK()    pthread_rwlock_trywrlock(&unfs.lock)
+#define FS_TRYLOCK()        pthread_rwlock_trywrlock(&unfs.lock)
 
 /// Filesystem unlock
-#define FS_UNLOCK()     pthread_rwlock_unlock(&unfs.lock)
+#define FS_UNLOCK()         pthread_rwlock_unlock(&unfs.lock)
+
+/// Node write lock
+#define FILE_WRLOCK(np)     pthread_rwlock_wrlock(&np->lock)
+
+/// Node read lock
+#define FILE_RDLOCK(np)     pthread_rwlock_rdlock(&np->lock)
+
+/// Node unlock
+#define FILE_UNLOCK(np)     pthread_rwlock_unlock(&np->lock)
+
 
 /// Node as defined in tsearch.c (for custom tree walk function)
 struct tnode {
@@ -107,9 +117,10 @@ void unfs_print_header(unfs_header_t* statp)
     printf("Label:       %s\n",   statp->label);
     printf("Version:     %s\n",   statp->version);
     printf("Block count: %#lx\n", statp->blockcount);
-    printf("Block size:  %#x\n", statp->blocksize);
+    printf("Block size:  %#x\n",  statp->blocksize);
     printf("Page count:  %#lx\n", statp->pagecount);
-    printf("Page size:   %#x\n", statp->pagesize);
+    printf("Page size:   %#x\n",  statp->pagesize);
+    printf("Page free:   %#lx\n", statp->pagefree);
     printf("Data page:   %#lx\n", statp->datapage);
     printf("FD page:     %#lx\n", statp->fdpage);
     printf("FD count:    %#lx\n", statp->fdcount);
@@ -117,7 +128,6 @@ void unfs_print_header(unfs_header_t* statp)
     printf("Del count:   %#x\n",  statp->delcount);
     printf("Del max:     %#x\n",  statp->delmax);
     printf("Map size:    %#lx\n", statp->mapsize);
-    printf("Map use:     %#lx\n", statp->mapuse);
 }
 
 /**
@@ -143,15 +153,15 @@ void unfs_print_tree(struct tnode* root)
 }
 
 /**
- * Scan the whole bitmap and count the number of bits set.
+ * Scan the whole bitmap array and count the number of bits set.
  * @return  number of pages are being use.
  */
 static u64 unfs_map_count()
 {
     u64 mapuse = 0, i;
-    u32* map = (u32*)unfs.header->map;
+    u64* bitmap = (u64*)unfs.header->map;
     for (i = 0; i < unfs.header->mapsize; i++) {
-        u32 mask = *map++;
+        u64 mask = *bitmap++;
         while (mask) {
             if (mask & 1) mapuse++;
             mask >>= 1;
@@ -170,10 +180,10 @@ static int unfs_map_check(u64 pageid, u32 pagecount)
 {
     if (pageid < unfs.header->datapage || pageid >= unfs.header->pagecount)
         return 1;
-    u32* map = (u32*)unfs.header->map;
+    u64* bitmap = (u64*)unfs.header->map;
     pageid -= unfs.header->datapage;
     while (pagecount--) {
-        if ((map[pageid >> 5] & (1 << (pageid & 31))) == 0)
+        if ((bitmap[pageid >> 6] & (1L << (pageid & 63))) == 0)
             return 1;
         pageid++;
     }
@@ -194,33 +204,33 @@ static int unfs_map_use(unfs_ioc_t ioc, u64 pageid, u32 pagecount)
         FATAL("page=%#lx datapage=%#lx", pageid, unfs.header->datapage);
     u64 pa = pageid - unfs.header->datapage;
 
-    u32* map = (u32*)unfs.header->map;
-    u64 mapidx = pa >> 5;
-    int mapbit = pa & 31;
-    u32 mask = 1 << mapbit;
+    u64* bitmap = (u64*)unfs.header->map;
+    u64 mapidx = pa >> 6;
+    int mapbit = pa & 63;
+    u64 mask = 1L << mapbit;
     u32 pc = pagecount;
     u64 i = mapidx;
     DEBUG_FN("page=%#lx count=%u map=%lu.%d", pageid, pagecount, mapidx, mapbit);
 
     while (pc) {
-        if (mask == 1) {     // if at bit 0
-            if (pc > 32) {
-                if (map[i] != 0)
+        if (mask == 1L) {    // if at bit 0
+            if (pc > 64) {
+                if (bitmap[i] != 0)
                     return ENOSPC;
-                map[i] = 0xffffffff;
-                pc -= 32;
+                bitmap[i] = ~0L;
+                pc -= 64;
                 i++;
             } else {
                 mask = (1L << pc) - 1;
-                if ((map[i] & mask) != 0)
+                if ((bitmap[i] & mask) != 0)
                     return ENOSPC;
-                map[i] |= mask;
+                bitmap[i] |= mask;
                 break;
             }
         } else {
-            if ((map[i] & mask) != 0)
+            if ((bitmap[i] & mask) != 0)
                 return ENOSPC;
-            map[i] |= mask;
+            bitmap[i] |= mask;
             if (--pc == 0)
                 break;
             if ((mask <<= 1) == 0) {
@@ -230,16 +240,16 @@ static int unfs_map_use(unfs_ioc_t ioc, u64 pageid, u32 pagecount)
         }
     }
     // advance the bitmap next free index
-    while (map[unfs.mapnextfree] == 0xffffffff)
+    while (bitmap[unfs.mapnextfree] == ~0L)
         unfs.mapnextfree++;
 
     // sync bitmap
-    u64 p1 = mapidx >> (UNFS_PAGESHIFT - 2);    // page containing first index
-    u64 p2 = i >> (UNFS_PAGESHIFT - 2);         // page containing last index
+    u64 p1 = mapidx >> (UNFS_PAGESHIFT - 3);    // page containing first index
+    u64 p2 = i >> (UNFS_PAGESHIFT - 3);         // page containing last index
     unfs.dev.write(ioc, unfs.header->map + p1, UNFS_MAPPA + p1, p2 - p1 + 1);
 
     // caller to sync header
-    unfs.header->mapuse += pagecount;
+    unfs.header->pagefree -= pagecount;
     return 0;
 }
 
@@ -255,10 +265,10 @@ static void unfs_map_free(unfs_ioc_t ioc, u64 pageid, u32 pagecount)
         FATAL("page=%#lx datapage=%#lx", pageid, unfs.header->datapage);
     u64 pa = pageid - unfs.header->datapage;
 
-    u32* map = (u32*)unfs.header->map;
-    u64 mapidx = pa >> 5;
-    int mapbit = pa & 31;
-    u32 mask = 1 << mapbit;
+    u64* bitmap = (u64*)unfs.header->map;
+    u64 mapidx = pa >> 6;
+    int mapbit = pa & 63;
+    u64 mask = 1L << mapbit;
     u32 pc = pagecount;
     u64 i = mapidx;
     DEBUG_FN("page=%#lx count=%u map=%lu.%d", pageid, pagecount, mapidx, mapbit);
@@ -266,23 +276,23 @@ static void unfs_map_free(unfs_ioc_t ioc, u64 pageid, u32 pagecount)
     // check and clear the bit maps at given page address and count
     while (pc) {
         if (mask == 1) {
-            if (pc > 32) {
-                if (map[i] != 0xffffffff)
-                    FATAL("map[%lu]=%#x exp 0xfffffff)", i, map[i]);
-                map[i] = 0;
-                pc -= 32;
+            if (pc > 64) {
+                if (bitmap[i] != ~0L)
+                    FATAL("bitmap[%lu]=%#x exp -1)", i, bitmap[i]);
+                bitmap[i] = 0;
+                pc -= 64;
                 i++;
             } else {
                 mask = (1L << pc) - 1;
-                if ((map[i] & mask) != mask)
-                    FATAL("map[%lu]=%#x mask1=%#x", i, map[i], mask);
-                map[i] &= ~mask;
+                if ((bitmap[i] & mask) != mask)
+                    FATAL("bitmap[%lu]=%#x mask1=%#x", i, bitmap[i], mask);
+                bitmap[i] &= ~mask;
                 break;
             }
         } else {
-            if ((map[i] & mask) != mask)
-                FATAL("map[%lu]=%#x mask=%#x", i, map[i], mask);
-            map[i] &= ~mask;
+            if ((bitmap[i] & mask) != mask)
+                FATAL("bitmap[%lu]=%#x mask=%#x", i, bitmap[i], mask);
+            bitmap[i] &= ~mask;
             if (--pc == 0)
                 break;
             if ((mask <<= 1) == 0) {
@@ -291,15 +301,16 @@ static void unfs_map_free(unfs_ioc_t ioc, u64 pageid, u32 pagecount)
             }
         }
     }
-    if (unfs.mapnextfree > mapidx) unfs.mapnextfree = mapidx;
+    if (unfs.mapnextfree > mapidx)
+        unfs.mapnextfree = mapidx;
 
     // sync bitmap
-    u64 p1 = mapidx >> (UNFS_PAGESHIFT - 2);    // page containing first index
-    u64 p2 = i >> (UNFS_PAGESHIFT - 2);         // page containing last index
+    u64 p1 = mapidx >> (UNFS_PAGESHIFT - 3);    // page containing first index
+    u64 p2 = i >> (UNFS_PAGESHIFT - 3);         // page containing last index
     unfs.dev.write(ioc, unfs.header->map + p1, UNFS_MAPPA + p1, p2 - p1 + 1);
 
     // caller to sync header
-    unfs.header->mapuse -= pagecount;
+    unfs.header->pagefree += pagecount;
 }
 
 /**
@@ -311,34 +322,34 @@ static void unfs_map_free(unfs_ioc_t ioc, u64 pageid, u32 pagecount)
 static u64 unfs_map_alloc(unfs_ioc_t ioc, u32 pagecount)
 {
     DEBUG_FN("%u", pagecount);
-    u32* map = (u32*)unfs.header->map;
+    u64* bitmap = (u64*)unfs.header->map;
     u64 mapsize = unfs.header->mapsize;
     u32 pc = pagecount;
-    u64 mapidx = -1L;
+    u64 mapidx = ~0L;
     int mapbit = -1;
     u64 i = unfs.mapnextfree;
 
     while (pc > 0 && i < mapsize) {
-        if (map[i] == 0) {              // case 32-bit map word is zero
-            if (mapidx == -1L) {
+        if (bitmap[i] == 0) {              // case 64-bit map word is zero
+            if (mapidx == ~0L) {
                 mapidx = i;
                 mapbit = 0;
             }
-            if (pc >= 32) pc -= 32;
+            if (pc >= 64) pc -= 64;
             else pc = 0;
             if (pc == 0)
                 break;
             i++;
-        } else {                        // case 32-bit map word is set
-            if (mapidx == -1L) {
-                u32 mask = 0xffffffff;
-                if (pc < 32)
+        } else {                        // case 64-bit map word is set
+            if (mapidx == ~0L) {
+                u64 mask = ~0L;
+                if (pc < 64)
                     mask = (1L << pc) - 1;
-                for (mapbit = 0; (map[i] & mask) != 0; mapbit++)
+                for (mapbit = 0; (bitmap[i] & mask) != 0; mapbit++)
                     mask <<= 1;
                 if (mask != 0) {
                     mapidx = i;
-                    int found = 32 - mapbit;
+                    int found = 64 - mapbit;
                     if (found < pc)
                         pc -= found;
                     else
@@ -346,12 +357,12 @@ static u64 unfs_map_alloc(unfs_ioc_t ioc, u32 pagecount)
                 }
                 i++;
             } else {
-                if (pc < 32 && (map[i] & ((1L << pc) - 1)) == 0) {
+                if (pc < 64 && (bitmap[i] & ((1L << pc) - 1)) == 0) {
                     pc = 0;
                     break;
                 }
                 // restart the search at this index
-                mapidx = -1L;
+                mapidx = ~0L;
                 pc = pagecount;
             }
         }
@@ -360,7 +371,7 @@ static u64 unfs_map_alloc(unfs_ioc_t ioc, u32 pagecount)
         return 0;
 
     // now mark the allocated bits and sync map to disk
-    u64 pageid = unfs.header->datapage + (mapidx << 5) + mapbit;
+    u64 pageid = unfs.header->datapage + (mapidx << 6) + mapbit;
     if (unfs_map_use(ioc, pageid, pagecount))
         FATAL("page=%#lx count=%u map=%lu.%d", pageid, pagecount, mapidx, mapbit);
 
@@ -409,13 +420,11 @@ static void unfs_node_sync(unfs_ioc_t ioc, unfs_node_t* nodep)
     unfs_node_io_t* niop = unfs.dev.page_alloc(ioc, &iopc);
     if (iopc != UNFS_FILEPC)
         FATAL("cannot allocate %d pages", UNFS_FILEPC);
-    niop->node.name = NULL;
+    memset(&niop->node, 0, sizeof(unfs_node_t));
     niop->node.pageid = nodep->pageid;
-    niop->node.parent = NULL;
     niop->node.parentid = nodep->parentid;
     niop->node.size = nodep->size;
     niop->node.isdir = nodep->isdir;
-    niop->node.open = 0;
     niop->node.dscount = nodep->dscount;
     if (!nodep->isdir)
         memcpy(niop->node.ds, nodep->ds, nodep->dscount * sizeof(unfs_ds_t));
@@ -471,15 +480,19 @@ static void unfs_node_update_children(unfs_ioc_t ioc,
 
     if (root->left == NULL && root->right == NULL) {
         if (nodep->parent == parent) {
+            FILE_WRLOCK(nodep);
             nodep->parentid = parent->pageid;
             unfs_node_sync(ioc, nodep);
+            FILE_UNLOCK(nodep);
         }
     } else {
         if (root->left != NULL)
             unfs_node_update_children(ioc, root->left, parent);
         if (nodep->parent == parent) {
+            FILE_WRLOCK(nodep);
             nodep->parentid = parent->pageid;
             unfs_node_sync(ioc, nodep);
+            FILE_UNLOCK(nodep);
         }
         if (root->right != NULL)
             unfs_node_update_children(ioc, root->right, parent);
@@ -603,6 +616,7 @@ static unfs_node_t* unfs_node_add(unfs_node_t* parent, const unfs_node_t* nodep)
     size_t nsize = nodep->isdir ? sizeof(unfs_node_t) : UNFS_PAGESIZE;
     size_t memsize = nsize + len + 1;
     unfs_node_t* newnodep = malloc(memsize);
+    pthread_rwlock_init(&newnodep->lock, NULL);
     newnodep->name = (char*)newnodep + nsize;
     strcpy(newnodep->name, nodep->name);
     newnodep->parent = parent;
@@ -656,6 +670,7 @@ static unfs_node_t* unfs_node_add_parents(const char* name)
 
 /**
  * Read/Write file data to/from device (all data pages have been allocated).
+ * @param   ioc         io context
  * @param   nodep       file node pointer
  * @param   buf         data buffer
  * @param   offset      file offset position
@@ -663,7 +678,8 @@ static unfs_node_t* unfs_node_add_parents(const char* name)
  * @param   wflag       write flag
  * @return  0 if ok else error code.
  */
-static int unfs_node_rw(unfs_node_t* nodep, void* buf, u64 offset, u64 len, int wflag)
+static int unfs_node_rw(unfs_ioc_t ioc, unfs_node_t* nodep,
+                        void* buf, u64 offset, u64 len, int wflag)
 {
     if (len == 0)
         return 0;
@@ -682,7 +698,6 @@ static int unfs_node_rw(unfs_node_t* nodep, void* buf, u64 offset, u64 len, int 
     u64 endlen = (byteoff + len) & (UNFS_PAGESIZE - 1);
 
     // perform read write
-    unfs_ioc_t ioc = unfs.dev.ioc_alloc();
     u32 iopc = (len << UNFS_PAGESHIFT) + 1;
     void* iop = unfs.dev.page_alloc(ioc, &iopc);
     for (;;) {
@@ -744,7 +759,6 @@ static int unfs_node_rw(unfs_node_t* nodep, void* buf, u64 offset, u64 len, int 
         }
     }
     unfs.dev.page_free(ioc, iop, iopc);
-    unfs.dev.ioc_free(ioc);
 
     return 0;
 }
@@ -935,6 +949,7 @@ static unfs_node_t* unfs_node_create(const char *name, int isdir)
     node.isdir = isdir;
     node.open = 0;
     node.dscount = 0;
+
     unfs_node_t* newnodep = unfs_node_add(parent, &node);
     parent->size++;
     unfs_node_sync(ioc, parent);
@@ -963,18 +978,22 @@ unfs_fd_t unfs_file_open(unfs_fs_t fs, const char *name, unfs_mode_t mode)
     FS_WRLOCK();
     unfs_node_t* nodep = unfs_node_find(name);
     if (nodep) {
+        FILE_WRLOCK(nodep);
         if ((mode & UNFS_OPEN_EXCLUSIVE) && nodep->open) {
+            FILE_UNLOCK(nodep);
             fd.error = EBUSY;
             goto done;
         }
+        nodep->open++;
+        FILE_UNLOCK(nodep);
     } else {
         if (!(mode & UNFS_OPEN_CREATE)) {
             fd.error = ENOENT;
             goto done;
         }
         nodep = unfs_node_create(name, 0);
+        nodep->open++;
     }
-    nodep->open++;
     fd.id = nodep;
 
 done:
@@ -992,13 +1011,13 @@ int unfs_file_close(unfs_fd_t fd)
     int err = EINVAL;
     unfs_node_t* nodep = fd.id;
 
-    //FS_WR_LOCK();
+    FILE_WRLOCK(nodep);
     DEBUG_FN("%s %d", nodep->name, nodep->open);
     if (nodep->open) {
         nodep->open--;
         err = 0;
     }
-    //FS_WR_UNLOCK();
+    FILE_UNLOCK(nodep);
     return err;
 }
 
@@ -1013,11 +1032,11 @@ char* unfs_file_name(unfs_fd_t fd, char* name, int len)
 {
     unfs_node_t* nodep = fd.id;
 
-    //FS_RD_LOCK();
+    FILE_RDLOCK(nodep);
     char* s = NULL;
     if (nodep->open)
         s = name ? strncpy(name, nodep->name, len) : strdup(nodep->name);
-    //FS_RD_UNLOCK();
+    FILE_UNLOCK(nodep);
     return s;
 }
 
@@ -1036,7 +1055,7 @@ int unfs_file_stat(unfs_fd_t fd, u64* sizep, u32* dscp, unfs_ds_t** dslp)
     int err = EINVAL;
     unfs_node_t* nodep = fd.id;
 
-    //FS_RD_LOCK();
+    FILE_RDLOCK(nodep);
     DEBUG_FN("%s", nodep->name);
     if (nodep->open) {
         if (sizep)
@@ -1053,7 +1072,7 @@ int unfs_file_stat(unfs_fd_t fd, u64* sizep, u32* dscp, unfs_ds_t** dslp)
         }
         err = 0;
     }
-    //FS_RD_UNLOCK();
+    FILE_UNLOCK(nodep);
     return err;
 }
 
@@ -1069,15 +1088,17 @@ int unfs_file_resize(unfs_fd_t fd, u64 newsize, int* fill)
     int err = EINVAL;
     unfs_node_t* nodep = fd.id;
 
-    FS_WRLOCK();
+    FILE_WRLOCK(nodep);
     DEBUG_FN("%s %#lx", nodep->name, newsize);
     if (nodep->open) {
         unfs_ioc_t ioc = unfs.dev.ioc_alloc();
+        FS_WRLOCK();
         unfs_node_resize(ioc, nodep, newsize, fill);
+        FS_UNLOCK();
         unfs.dev.ioc_free(ioc);
         err = 0;
     }
-    FS_UNLOCK();
+    FILE_UNLOCK(nodep);
     return err;
 }
 
@@ -1094,13 +1115,18 @@ int unfs_file_read(unfs_fd_t fd, void *buf, u64 offset, u64 len)
     int err = EINVAL;
     unfs_node_t* nodep = fd.id;
 
+    FILE_RDLOCK(nodep);
     DEBUG_FN("%s off=%#lx len=%#lx size=%#lx", nodep->name, offset, len, nodep->size);
     if (nodep->open) {
-        if ((offset + len) <= nodep->size)
-            err = unfs_node_rw(nodep, buf, offset, len, 0);
-        else
+        if ((offset + len) <= nodep->size) {
+            unfs_ioc_t ioc = unfs.dev.ioc_alloc();
+            err = unfs_node_rw(ioc, nodep, buf, offset, len, 0);
+            unfs.dev.ioc_free(ioc);
+        } else {
             ERROR("%s off=%#lx len=%#lx size=%#lx", nodep->name, offset, len, nodep->size);
+        }
     }
+    FILE_UNLOCK(nodep);
     return err;
 }
 
@@ -1126,19 +1152,21 @@ int unfs_file_write(unfs_fd_t fd, const void *buf, u64 offset, u64 len)
     }
 #endif
 
+    FILE_WRLOCK(nodep);
     if (nodep->open) {
         err = 0;
         u64 size = offset + len;
-        FS_WRLOCK();
+        unfs_ioc_t ioc = unfs.dev.ioc_alloc();
         if (size > nodep->size) {
-            unfs_ioc_t ioc = unfs.dev.ioc_alloc();
+            FS_WRLOCK();
             err = unfs_node_resize(ioc, nodep, size, NULL);
-            unfs.dev.ioc_free(ioc);
+            FS_UNLOCK();
         }
-        FS_UNLOCK();
         if (!err)
-            err = unfs_node_rw(nodep, (void*)buf, offset, len, 1);
+            err = unfs_node_rw(ioc, nodep, (void*)buf, offset, len, 1);
+        unfs.dev.ioc_free(ioc);
     }
+    FILE_UNLOCK(nodep);
     return err;
 }
 
@@ -1152,6 +1180,7 @@ u64 unfs_file_checksum(unfs_fd_t fd)
     u64 sum = 0;
     unfs_node_t* nodep = fd.id;
 
+    FILE_RDLOCK(nodep);
     DEBUG_FN("%s %#lx", nodep->name, newsize);
     if (nodep->open) {
         int d, p, i;
@@ -1177,6 +1206,7 @@ u64 unfs_file_checksum(unfs_fd_t fd)
         unfs.dev.page_free(ioc, iop, iopc);
         unfs.dev.ioc_free(ioc);
     }
+    FILE_UNLOCK(nodep);
     return sum;
 }
 
@@ -1327,7 +1357,7 @@ int unfs_remove(unfs_fs_t fs, const char *name, int isdir)
     unfs_node_t* nodep = unfs_node_find(name);
     if (!nodep || nodep->isdir != isdir) {
         err = ENOENT;
-    } else if (nodep->open || (nodep->isdir && nodep->size != 0)) {
+    } else if (nodep->open || (isdir && nodep->size != 0)) {
         err = EBUSY;
     } else {
         unfs_ioc_t ioc = unfs.dev.ioc_alloc();
@@ -1388,7 +1418,6 @@ int unfs_rename(unfs_fs_t fs, const char *src, const char *dst, int override)
             }
             unfs_node_remove(ioc, dstnode);
         } else {
-            unfs.dev.ioc_free(ioc);
             err = EEXIST;
             goto done;
         }
@@ -1411,10 +1440,15 @@ int unfs_rename(unfs_fs_t fs, const char *src, const char *dst, int override)
     // sync node and parents
     unfs_node_sync(ioc, srcnode);
     if (srcparent != dstparent) {
+        FILE_WRLOCK(srcparent);
         srcparent->size--;
         unfs_node_sync(ioc, srcparent);
+        FILE_UNLOCK(srcparent);
+
+        FILE_WRLOCK(dstparent);
         dstparent->size++;
         unfs_node_sync(ioc, dstparent);
+        FILE_UNLOCK(dstparent);
     }
 
 done:
@@ -1530,6 +1564,7 @@ static void unfs_init(const char* device)
     if (!unfs.header) {
         pthread_rwlock_init(&unfs.lock, NULL);
         unfs.header = unfs_open_dev(device);
+        unfs.header->pagefree = unfs.header->pagecount;
         unfs.fsid = time(0);
     }
     pthread_mutex_unlock(&unfslock);
@@ -1560,11 +1595,12 @@ unfs_fs_t unfs_open(const char* device)
     unfs_init(device);
     int fsid = __sync_add_and_fetch(&unfs.open, 1);
     DEBUG_FN("%s %d", device, fsid);
+
     FS_WRLOCK();
     unfs_header_t* hp = unfs.header;
     u64 pagecount = hp->pagecount;
     u64 datapage = hp->datapage;
-    u64 mapsize = (pagecount - datapage + 31) / 32;   // in 32-bit words
+    u64 mapsize = (pagecount - datapage + 63) / 64;   // in 64-bit words
     unfs_fs_t fs = 0;
 
     // allocate IO pages
@@ -1576,15 +1612,15 @@ unfs_fs_t unfs_open(const char* device)
 
     // read and validate the UNFS header
     unfs.dev.read(ioc, hp, UNFS_HEADPA, datapage);
-    u64 mapuse = unfs_map_count();
-    DEBUG_FN("pc=%#lx dp=%#lx ms=%#lx mu=%#lx (fp=%#lx fc=%#lx dc=%u)",
-                                pagecount, datapage, mapsize, mapuse,
+    u64 pagefree = pagecount - unfs_map_count();
+    DEBUG_FN("pc=%#lx pf=%#lx dp=%#lx ms=%#lx fp=%#lx fc=%#lx dc=%u",
+                                pagecount, pagefree, datapage, mapsize,
                                 hp->fdpage, hp->fdcount, hp->delcount);
     if (strcmp(hp->version, UNFS_VERSION) ||
         (hp->pagecount != pagecount) ||
         (hp->datapage != datapage) ||
         (hp->mapsize != mapsize) ||
-        (hp->mapuse != mapuse) ||
+        (hp->pagefree != pagefree) ||
         ((hp->fdpage + ((hp->fdcount + hp->delcount + 1) * UNFS_FILEPC)) != pagecount)) {
         ERROR("bad UNFS header");
         unfs_print_header(hp);
@@ -1592,9 +1628,9 @@ unfs_fs_t unfs_open(const char* device)
     }
 
     // set up the map next free index
-    u32* map = (u32*)hp->map;
+    u64* bitmap = (u64*)hp->map;
     u64 i;
-    for (i = 0; i < mapsize && map[i] == 0xffffffff; i++);
+    for (i = 0; i < mapsize && bitmap[i] == ~0L; i++);
     unfs.mapnextfree = i;
 
     // read each file entry and build the node tree in memory
@@ -1659,7 +1695,7 @@ int unfs_check(const char* device)
     unfs_header_t* hp = unfs.header;
     u64 pagecount = hp->pagecount;
     u64 datapage = hp->datapage;
-    u64 mapsize = (pagecount - datapage + 31) / 32;   // in 32-bit words
+    u64 mapsize = (pagecount - datapage + 63) / 64;   // in 64-bit words
     int err = EINVAL;
 
     // allocate IO pages
@@ -1672,15 +1708,15 @@ int unfs_check(const char* device)
 
     // read and validate the UNFS header format
     unfs.dev.read(ioc, hp, UNFS_HEADPA, datapage);
-    u64 mapuse = unfs_map_count();
-    DEBUG_FN("pc=%#lx dp=%#lx ms=%#lx mu=%#lx (fp=%#lx fc=%#lx dc=%u)",
-                                pagecount, datapage, mapsize, mapuse,
+    u64 pagefree = pagecount - unfs_map_count();
+    DEBUG_FN("pc=%#lx pf=%#lx dp=%#lx ms=%#lx fp=%#lx fc=%#lx dc=%u",
+                                pagecount, pagefree, datapage, mapsize,
                                 hp->fdpage, hp->fdcount, hp->delcount);
     if (strcmp(hp->version, UNFS_VERSION) ||
         (hp->pagecount != pagecount) ||
         (hp->datapage != datapage) ||
         (hp->mapsize != mapsize) ||
-        (hp->mapuse != mapuse) ||
+        (hp->pagefree != pagefree) ||
         ((hp->fdpage + (hp->fdcount + hp->delcount + 1) * UNFS_FILEPC) != pagecount)) {
         ERROR("bad UNFS header");
         unfs_print_header(hp);
@@ -1756,6 +1792,7 @@ int unfs_format(const char* device, const char* label, int print)
 {
     unfs_init(device);
     DEBUG_FN("%s", device);
+
     FS_WRLOCK();
     unfs_header_t* hp = unfs.header;
     strncpy(hp->label, label, sizeof(hp->label) - 1);
@@ -1763,8 +1800,7 @@ int unfs_format(const char* device, const char* label, int print)
     hp->fdpage = hp->pagecount - UNFS_FILEPC;
     hp->fdcount = 0;
     hp->dircount = 0;
-    hp->mapuse = 0;
-    hp->mapsize = (hp->pagecount - hp->datapage + 31) / 32; // in 32-bit words
+    hp->mapsize = (hp->pagecount - hp->datapage + 63) / 64; // in 64-bit words
     hp->delmax = (UNFS_PAGESIZE - offsetof(unfs_header_t, delstack)) / sizeof(u64);
 
     // create root directory

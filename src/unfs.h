@@ -124,6 +124,7 @@ typedef struct {
 typedef struct _unfs_node {
     char*               name;               ///< file name (non-persistent)
     struct _unfs_node*  parent;             ///< parent node (non-persistent)
+    pthread_rwlock_t    lock;               ///< file lock (non-persistent)
     u32                 memsize;            ///< memory size (non-persistent)
     u32                 open;               ///< open count (non-persistent)
     u64                 pageid;             ///< page address
@@ -198,15 +199,15 @@ typedef struct {
             char        label[64];          ///< disk label
             char        version[16];        ///< filesystem version name
             u64         blockcount;         ///< number of blocks
-            u64         pagecount;          ///< number of pages
+            u64         pagecount;          ///< total number of pages
+            u64         pagefree;           ///< number of free pages
             u32         blocksize;          ///< block size
             u32         pagesize;           ///< page size
             u64         datapage;           ///< start data page address
             u64         fdpage;             ///< next file entry page address
             u64         fdcount;            ///< number of file entries
             u64         dircount;           ///< number of directories count
-            u64         mapsize;            ///< map size in 32-bit word
-            u64         mapuse;             ///< number of pages allocated
+            u64         mapsize;            ///< map size in 64-bit word
             u32         delmax;             ///< deleted stack max size
             u32         delcount;           ///< deleted stack count
             u64         delstack[];         ///< stack of deleted file entries
