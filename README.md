@@ -56,7 +56,7 @@ is /opt, use the following procedure (tested on CentOS):
         $ cd /opt
         $ git clone https://github.com/mongodb/mongo.git -b v3.4
         $ cd mongo
-        $ scons --use-system-wiredtiger -j16
+        $ scons CPPPATH=/opt/wiredtiger LIBPATH=/opt/wiredtiger/.libs RPATH=/opt/wiredtiger/.libs --use-system-wiredtiger -j16
 
 
     3) Download and install the UNVMe driver:
