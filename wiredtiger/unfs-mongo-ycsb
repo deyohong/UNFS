@@ -25,6 +25,10 @@
 #   $ unfs-mongo-ycsb
 #
 
+# Program name and usage
+PROG=$(basename $0)
+USAGE="Usage: ${PROG} [DEVICE_NAME] [KEY=VALUE]..."
+
 # Default test options
 : ${THREADS="1 8 16"}
 : ${OPCOUNT=1000000}
@@ -47,14 +51,130 @@ scanproportion=0
 insertproportion=0
 requestdistribution=zipfian"
 
+
+prompt()
+{
+    #read -p "Press <Enter> to continue..."
+    echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    sleep 5
+}
+
+kill_proc()
+{
+    pkill -f $1
+    while [ -n "$(pgrep -f $1)" ]; do
+        sleep 3
+    done
+}
+
+poll_status()
+{
+    lc=0
+    while [ 1 ]; do
+        lcn=$(wc -l $1 | cut -d' ' -f1)
+        if [ ${lc} -eq ${lcn} ]; then
+            sleep 5
+            continue
+        fi
+        ((lc++))
+        out=$(sed -n "${lc},${lcn}p" $1)
+        lc=${lcn}
+        echo "${out}"
+        if [[ ${out} =~ "$2" ]]; then
+            sleep 5
+            break
+        elif [[ ${out} =~ (Exception:|BACKTRACE|Connection refused) ]]; then
+            ERROR=1
+            break
+        fi
+    done
+}
+
+run_mongod()
+{
+    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.mongod.${LOGSUFFIX}
+    echo -e "\n${logfile}"
+    rm -rf ${DBPATH} ${logfile}
+    mkdir -p ${DBPATH}
+    if [ -n "${UNFS_DEVICE}" ]; then
+        export UNFS_DEVICE=${UNFS_DEVICE}
+        unfs_format > ${logfile} 2>&1
+        echo > ${logfile}
+    fi
+
+    cmd="numactl --interleave=all ${MONGOD} --quiet --dbpath ${DBPATH} ${CONFIG}"
+    echo -e "\n=== ${cmd}" >> ${logfile}
+    ${cmd} >> ${logfile} 2>&1 &
+    poll_status ${logfile} 'waiting for connections'
+    if [ ${ERROR} -ne 0 ]; then
+        kill_proc ${MONGOD}
+        exit 1
+    fi
+    prompt
+}
+
+load_ycsb()
+{
+    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.load.${LOGSUFFIX}
+    log9505=${LOGPREFIX}.${OPCOUNT}.t$1.r95w05.${LOGSUFFIX}
+    log5050=${LOGPREFIX}.${OPCOUNT}.t$1.r50w50.${LOGSUFFIX}
+    log0595=${LOGPREFIX}.${OPCOUNT}.t$1.r05w95.${LOGSUFFIX}
+
+    # check if all tests have run successfully
+    if [ -e ${logfile} ] && [ -n "$(grep '[INSERT], Return=OK,' ${logfile})" ] && \
+       [ -e ${log9505} ] && [ -n "$(grep '[UPDATE], Return=OK,' ${log9505})" ] && \
+       [ -e ${log5050} ] && [ -n "$(grep '[UPDATE], Return=OK,' ${log5050})" ] && \
+       [ -e ${log0595} ] && [ -n "$(grep '[UPDATE], Return=OK,' ${log0595})" ]; then
+        echo -e "\nSkip ${logfile}..."
+    else
+        echo -e "\n${logfile}"
+        cmd="${YCSB} load ${MONGODRV} -P ${WORKLOAD} -threads $1"
+        echo "=== ${cmd}" > ${logfile}
+        echo "+++ $(date)" >> ${logfile}
+        ${cmd} >> ${logfile} 2>&1 &
+        poll_status ${logfile} 'Return=OK'
+        echo "+++ $(date)" | tee -a ${logfile}
+        if [ ${ERROR} -ne 0 ]; then
+            kill_proc ${YCSB}
+            kill_proc ${MONGOD}
+            exit 1
+        fi
+    fi
+    prompt
+}
+
+run_ycsb()
+{
+    rp=$(printf '%02d' $2)
+    wp=$(printf '%02d' $((100-$2)))
+    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.r${rp}w${wp}.${LOGSUFFIX}
+
+    # check if test has run successfully
+    if [ -e ${logfile} ] && [ -n "$(grep '[UPDATE], Return=OK,' ${logfile})" ]; then
+        echo -e "\nSkip ${logfile}..."
+    else
+        echo -e "\n${logfile}"
+        cmd="${YCSB} run ${MONGODRV} -P ${WORKLOAD} -threads $1 -p readproportion=.${rp} -p updateproportion=.${wp}"
+        echo "=== ${cmd}" > ${logfile}
+        echo "+++ $(date)" >> ${logfile}
+        ${cmd} >> ${logfile} 2>&1 &
+        poll_status ${logfile} '[UPDATE], Return=OK'
+        echo "+++ $(date)" | tee -a ${logfile}
+        if [ ${ERROR} -ne 0 ]; then
+            kill_proc ${YCSB}
+            kill_proc ${MONGOD}
+            exit 1
+        fi
+    fi
+    prompt
+}
+
+
+# Check executables
 if [ ! -x ${YCSB} ]; then echo "${YCSB} not found"; exit; fi
 if [ ! -x ${MONGOD} ]; then echo "${MONGOD} not found"; exit; fi
 
-# Program name and usage
-PROG=$(basename $0)
-USAGE="Usage: ${PROG} [DEVICE_NAME] [KEY=VALUE]..."
-
-# Parsing test arguments
+# Parse test arguments
 for i in $@; do
     case $i in
     [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f].[0-9A-Fa-f])
@@ -99,10 +219,10 @@ case ${UNFS_DEVICE} in
     ;;
 esac
 
-# Readjust OPCOUNT in case it was changed with specified parameter
+# Adjust OPCOUNT in case it was changed with specified parameter
 OPCOUNT=$(echo ${YCSBTEXT} | sed 's/.*operationcount=\([0-9]\+\).*/\1/')
 
-# Log directories
+# Create log directory
 LOGPREFIX=${LOGDIR}/${HOSTNAME}
 mkdir -p ${LOGDIR}
 
@@ -111,116 +231,18 @@ WORKLOAD=${LOGPREFIX}.${OPCOUNT}.workload
 echo "${YCSBTEXT}" > ${WORKLOAD}
 if [ $? -ne 0 ]; then exit; fi
 
-prompt()
-{
-    #read -p "Press <Enter> to continue..."
-    echo -e "\n========================"
-    sleep 5
-}
-
-check_status()
-{
-    err=1
-    for i in {1..30}; do
-        sleep 5
-        if [ -n "$(tail -10 $1 | grep "$2")" ]; then
-            err=0
-            break
-        fi
-        if [ -n "$(egrep -i 'Aborted:|aborting|terminating|BACKTRACE|Connection refused' $1)" ]; then
-            sleep 5
-            break
-        fi
-    done
-    if [ ${err} -ne 0 ]; then
-        tail -10 $1
-        echo "ERROR: Expect: $2"
-        exit 1
-    fi
-}
-
-run_mongod()
-{
-    echo -e "\n${MONGODLOG}"
-    rm -rf ${DBPATH}
-    mkdir -p ${DBPATH}
-    if [ -n "${UNFS_DEVICE}" ]; then
-        export UNFS_DEVICE=${UNFS_DEVICE}
-        unfs_format | tee -a ${MONGODLOG}
-    fi
-
-    cmd="numactl --interleave=all ${MONGOD} --quiet --dbpath ${DBPATH} ${CONFIG}"
-    echo -e "\n=== ${cmd}" | tee -a ${MONGODLOG}
-    ${cmd} >> ${MONGODLOG} 2>&1 &
-    check_status ${MONGODLOG} 'waiting for connections'
-
-    line=$(grep -n MongoDB ${MONGODLOG} | tail -1)
-    tail -n +${line/:*/} ${MONGODLOG}
-    prompt
-}
-
-load_ycsb()
-{
-    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.load.${LOGSUFFIX}
-    log9505=${LOGPREFIX}.${OPCOUNT}.t$1.r95w05.${LOGSUFFIX}
-    log5050=${LOGPREFIX}.${OPCOUNT}.t$1.r50w50.${LOGSUFFIX}
-    log0595=${LOGPREFIX}.${OPCOUNT}.t$1.r05w95.${LOGSUFFIX}
-
-    # check if all tests have run successfully
-    if [ -e ${logfile} ] && [ -n $(grep '[INSERT], Return=OK,' ${logfile}) ] && \
-       [ -e ${log9505} ] && [ -n $(grep '[UPDATE], Return=OK,' ${log9505}) ] && \
-       [ -e ${log5050} ] && [ -n $(grep '[UPDATE], Return=OK,' ${log5050}) ] && \
-       [ -e ${log0595} ] && [ -n $(grep '[UPDATE], Return=OK,' ${log0595}) ]; then
-        echo -e "\nSkip ${logfile}..."
-    else
-        echo -e "\n${logfile}"
-        cmd="${YCSB} load ${MONGODRV} -P ${WORKLOAD} -threads $1"
-        echo "=== ${cmd}" | tee ${logfile}
-        echo "+++ $(date)" | tee -a ${logfile}
-        ${cmd} 2>&1 | tee -a ${logfile}
-        check_status ${logfile} 'Return=OK'
-        echo "+++ $(date)" | tee -a ${logfile}
-    fi
-    prompt
-}
-
-run_ycsb()
-{
-    rp=$(printf '%02d' $2)
-    wp=$(printf '%02d' $((100-$2)))
-    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.r${rp}w${wp}.${LOGSUFFIX}
-
-    # check if test has run successfully
-    if [ -e ${logfile} ] && [ -n $(grep '[UPDATE], Return=OK,' ${logfile}) ]; then
-        echo -e "\nSkip ${logfile}..."
-    else
-        echo -e "\n${logfile}"
-        cmd="${YCSB} run ${MONGODRV} -P ${WORKLOAD} -threads $1 -p readproportion=.${rp} -p updateproportion=.${wp}"
-        echo "=== ${cmd}" | tee ${logfile}
-        echo "+++ $(date)" | tee -a ${logfile}
-        ${cmd} 2>&1 | tee -a ${logfile}
-        check_status ${logfile} 'Return=OK'
-        echo "+++ $(date)" | tee -a ${logfile}
-    fi
-    prompt
-}
-
 sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"
 sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/defrag"
-killall -q mongod
-sleep 2
+
+kill_proc mongod
+ERROR=0
 
 for t in ${THREADS}; do
-    MONGODLOG=${LOGPREFIX}.${OPCOUNT}.mongod.t$t.${LOGSUFFIX}
-    rm -f ${MONGODLOG}
     run_mongod $t
     load_ycsb $t
     for r in ${READS}; do
         run_ycsb $t $r
     done
-    killall mongod
-    check_status ${MONGODLOG} 'shutting down with code:0'
-    echo -e "============\n" >> ${MONGODLOG}
+    kill_proc mongod
 done
-
 

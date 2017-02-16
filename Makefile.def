@@ -32,14 +32,12 @@
 SHELL := /bin/sh
 
 # Default compilation flags
-CPPFLAGS += -D_GNU_SOURCE
-CFLAGS += -Wall -fPIC -O2
+CFLAGS ?= -O2
+CFLAGS += -Wall -fPIC -mpopcnt
+CPPFLAGS += -D_GNU_SOURCE -DUNFS_UNVME
 
 # To turn on debug logging
 #CPPFLAGS += -DUNFS_DEBUG
-
-# To build UNFS with UNVMe support
-CPPFLAGS += -DUNFS_UNVME
 
 # To build WiredTiger plugin library for MongoDB 3.4
 WIREDTIGERDIR = /opt/wiredtiger

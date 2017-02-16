@@ -58,11 +58,6 @@ typedef struct {
     unfs_header_t*          fsheader;       ///< filesystem header
 } unfs_raw_dev_t;
 
-/// Print fatal error message and terminate (unrecoverable error)
-#define FATAL(fmt, arg...) do { ERROR(fmt, ##arg); unfs_cleanup(); abort(); \
-                           } while (0)
-void unfs_cleanup();
-
 /// UNVMe global object
 static unfs_raw_dev_t    dev;
 
@@ -90,9 +85,10 @@ static unfs_header_t* unfs_dev_open(const char* device)
 
     // calculate filesystem header based on disk capacity
     dev.blockcount /= (dev.blocksize / 512);
-    u64 pagecount = dev.blockcount / (UNFS_PAGESIZE / dev.blocksize);
+    u64 pagecount = (dev.blockcount / (UNFS_PAGESIZE / dev.blocksize)) & ~1L;
     int bitsperpage = 8 << UNFS_PAGESHIFT;
-    u64 datapage = (pagecount + bitsperpage - 1) / bitsperpage + 1;
+    u64 datapage = (pagecount + bitsperpage - 1) / bitsperpage + UNFS_MAPPA;
+    datapage = (datapage + 1) & ~1L;
 
     // allocate filesystem header including the free map
     void* hp = mmap(0, datapage << UNFS_PAGESHIFT, PROT_READ|PROT_WRITE,
@@ -115,8 +111,7 @@ static unfs_header_t* unfs_dev_open(const char* device)
 static void unfs_dev_close()
 {
     DEBUG_FN();
-    if (dev.device)
-        free(dev.device);
+    if (dev.device) free(dev.device);
     if (dev.fsheader)
         munmap(dev.fsheader, dev.fsheader->datapage << UNFS_PAGESHIFT);
     if (dev.fd > 0) close(dev.fd);

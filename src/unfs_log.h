@@ -66,6 +66,8 @@
     #endif
 #endif // _UNVME_LOG_H
 
+#define FATAL(fmt, arg...) do { ERROR(fmt, ##arg); abort(); } while (0)
+
 /// @endcond
 
 #endif // _UNFS_LOG_H

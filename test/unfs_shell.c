@@ -133,16 +133,19 @@ static int cmd_cd(const char* arg)
  */
 static int ls_compare(const void* p1, const void* p2, void* arg)
 {
+    unfs_dir_entry_t* d1 = (unfs_dir_entry_t*)p1;
+    unfs_dir_entry_t* d2 = (unfs_dir_entry_t*)p2;
+    if (d1->isdir != d2->isdir) return d2->isdir - d1->isdir;
+
+    int n1 = strlen(d1->name);
+    int n2 = strlen(d2->name);
     if (arg) {
         int* plen = arg;
-        int n = strlen(((unfs_dir_entry_t*)p1)->name);
-        if (n > *plen)
-            *plen = n;
-        n = strlen(((unfs_dir_entry_t*)p2)->name);
-        if (n > *plen)
-            *plen = n;
+        *plen = n1 > n2 ? n1 : n2;
     }
-    return strcmp(((unfs_dir_entry_t*)p1)->name, ((unfs_dir_entry_t*)p2)->name);
+    int n = n1 < n2 ? n1 : n2;
+    int res = strncmp(d1->name, d2->name, n);
+    return res ? res : (n1 - n2);
 }
 
 /**

@@ -36,7 +36,7 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <sched.h>
+#include <pthread.h>
 #include <errno.h>
 
 #include "unfs.h"
@@ -53,16 +53,11 @@ typedef struct {
     u64                     qiocmask;       ///< IO queue available mask
     u64                     qbufmask;       ///< IO queue buffer used mask
     u64                     qallmask;       ///< IO queue all mask
-    int                     qnext;          ///< next IO queue to check
+    u32                     qnext;          ///< next IO queue to check
     int                     qpac;           ///< IO queue allocated page count
     void**                  qbuf;           ///< IO queue allocated pages
     unfs_header_t*          fsheader;       ///< filesystem header
 } unfs_unvme_dev_t;
-
-/// Print fatal error message and terminate (unrecoverable error)
-#define FATAL(fmt, arg...) do { ERROR(fmt, ##arg); unfs_cleanup(); abort(); \
-                           } while (0)
-void unfs_cleanup();
 
 /// UNVMe global object
 static unfs_unvme_dev_t    dev;
@@ -102,9 +97,10 @@ static unfs_header_t* unfs_dev_open(const char* device)
     dev.device = strdup(device);
     dev.ns = ns;
     dev.pbshift = ns->pageshift - ns->blockshift;
-    u64 pagecount = ns->blockcount / ns->nbpp;
+    u64 pagecount = (ns->blockcount / ns->nbpp) & ~1L;
     int bitsperpage = 8 << UNFS_PAGESHIFT;
-    u64 datapage = (pagecount + bitsperpage - 1) / bitsperpage + 1;
+    u64 datapage = (pagecount + bitsperpage - 1) / bitsperpage + UNFS_MAPPA;
+    datapage = (datapage + 1) & ~1L;
 
     // allocate filesystem header including the bitmap
     dev.fsheader = unvme_alloc(ns, datapage << UNFS_PAGESHIFT);
@@ -140,10 +136,8 @@ static void unfs_dev_close()
             if (dev.qbuf[0]) unvme_free(dev.ns, dev.qbuf[0]);
             free(dev.qbuf);
         }
-        if (dev.device)
-            free(dev.device);
-        if (dev.fsheader)
-            unvme_free(dev.ns, dev.fsheader);
+        if (dev.device) free(dev.device);
+        if (dev.fsheader) unvme_free(dev.ns, dev.fsheader);
         unvme_close(dev.ns);
     }
     memset(&dev, 0, sizeof(dev));
@@ -155,18 +149,16 @@ static void unfs_dev_close()
  */
 static unfs_ioc_t unfs_dev_ioc_alloc()
 {
-    int q = dev.qnext;
+    u32 q = dev.qnext;
     for (;;) {
-        if (++q >= dev.ns->qcount)
-            q = 0;
+        if (++q >= dev.ns->qcount) q = 0;
         u64 mask = 1L << q;
         u64 qiocmask = __sync_fetch_and_or(&dev.qiocmask, mask);
         if ((qiocmask & mask) == 0L) {
             dev.qnext = q;
-            return (unfs_ioc_t)q;
+            return q;
         }
-        if (dev.qiocmask == dev.qallmask)
-            sched_yield();
+        if (dev.qiocmask == dev.qallmask) sched_yield();
     }
     // NOT REACHED
 }
@@ -196,8 +188,7 @@ static void* unfs_dev_page_alloc(unfs_ioc_t ioc, u32* pc)
     u64 qbufmask = __sync_fetch_and_or(&dev.qbufmask, mask);
     if ((qbufmask & mask) != 0L)
         FATAL("q%ld buffer is already allocated", ioc);
-    if (*pc > dev.qpac)
-        *pc = dev.qpac;
+    if (*pc > dev.qpac) *pc = dev.qpac;
     return dev.qbuf[ioc];
 }
 

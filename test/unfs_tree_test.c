@@ -54,59 +54,56 @@ static const char* usage =
           -n NSID         NVMe namespace id (default 1)\n\
           -t THREADCOUNT  number of threads (default 32)\n\
           -d DEPTH        tree depth per thread (default 8)\n\
-          -f FILECOUNT    number of files per directory (default 4)\n\
+          -f FILECOUNT    number of files per directory (default 16)\n\
           DEVICE_NAME     device name\n";
 
 static unfs_fs_t    fs;                     ///< filesystem handle
 static int          verbose = 0;            ///< verbose flag
 static int          thread_count = 32;      ///< number of threads
 static int          tree_depth = 8;         ///< directory tree depth
-static int          file_count = 4;         ///< number of files per directory
-static int          small_file = 0;         ///< small file for quick test
+static int          file_count = 16;        ///< number of files per directory
 static sem_t        sm_ready;               ///< thread ready semaphore
 static sem_t        sm_run;                 ///< thread run test semaphore
 
 /// Print if verbose flag is set
 #define VERBOSE(fmt, arg...) if (verbose) printf(fmt, ##arg)
 
-/// Print fatal error message and exit
-#define FATAL(fmt, arg...) do { ERROR(fmt, ##arg); exit(1); } while (0)
 
+/**
+ * Open a file and setup pattern.
+ */
+static unfs_fd_t prep_file(const char* filename, unfs_node_io_t* niop)
+{
+    unfs_fd_t fd = unfs_file_open(fs, filename, 0);
+    if (fd.error)
+        FATAL("Open %s (%s)", filename, strerror(fd.error));
+
+    u64 size;
+    u32 dsc;
+    unfs_ds_t* dslp;
+    unfs_file_stat(fd, &size, &dsc, &dslp);
+    memset(niop, (int)size, sizeof(*niop));
+    niop->node.size = size;
+    niop->node.dscount = dsc;
+    memcpy(niop->node.ds, dslp, dsc * sizeof(unfs_ds_t));
+    strcpy(niop->name, filename);
+    free(dslp);
+
+    return fd;
+}
 
 /**
  * Mark a file by writing its node info at the end.
  */
 static void mark_file(const char* filename)
 {
-    unfs_fd_t fd = unfs_file_open(fs, filename, 0);
-    if (fd.error)
-        FATAL("Open %s (%s)", filename, strerror(fd.error));
-
-    // adjust file size if necessary
     unfs_node_io_t niop;
-    u64 size;
-    u32 dsc;
-    unfs_ds_t* dslp;
-    unfs_file_stat(fd, &size, &dsc, &dslp);
-    if (size < sizeof(niop)) {
-        size = sizeof(niop);
-        unfs_file_resize(fd, size, 0);
-        unfs_file_stat(fd, &size, &dsc, &dslp);
-    }
-    VERBOSE("# mark file %s %ld %d\n", filename, size, dsc);
+    unfs_fd_t fd = prep_file(filename, &niop);
+    VERBOSE("# mark %s %#lx %u\n", filename, niop.node.size, niop.node.dscount);
 
-    // setup unique 8K pattern
-    memset(&niop, (int)size, sizeof(niop));
-    niop.node.size = size;
-    niop.node.dscount = dsc;
-    memcpy(niop.node.ds, dslp, dsc * sizeof(unfs_ds_t));
-    strcpy(niop.name, filename);
-    free(dslp);
-
-    // fill file with pattern
     u64 pos = 0;
-    while (pos < size) {
-        u64 n = size - pos;
+    while (pos < niop.node.size) {
+        u64 n = niop.node.size - pos;
         if (n > sizeof(niop)) n = sizeof(niop);
         unfs_file_write(fd, &niop, pos, n);
         pos += n;
@@ -120,36 +117,17 @@ static void mark_file(const char* filename)
  */
 static void check_file(const char* filename)
 {
-    VERBOSE("# check file %s\n", filename);
-    unfs_fd_t fd = unfs_file_open(fs, filename, 0);
-    if (fd.error)
-        FATAL("Open %s (%s)", filename, strerror(fd.error));
+    unfs_node_io_t niop;
+    unfs_fd_t fd = prep_file(filename, &niop);
+    VERBOSE("# check %s %#lx %u\n", filename, niop.node.size, niop.node.dscount);
 
-    // check file size
-    unfs_node_io_t wniop, rniop;
-    u64 size;
-    u32 dsc;
-    unfs_ds_t* dslp;
-    unfs_file_stat(fd, &size, &dsc, &dslp);
-    if (size < sizeof(wniop))
-        FATAL("%s has invalid size %ld", filename, size);
-
-    // setup unique 8K pattern
-    memset(&wniop, (int)size, sizeof(wniop));
-    wniop.node.size = size;
-    wniop.node.dscount = dsc;
-    memcpy(wniop.node.ds, dslp, dsc * sizeof(unfs_ds_t));
-    strcpy(wniop.name, filename);
-    free(dslp);
-
-    // fill file with pattern
     u64 pos = 0;
-    while (pos < size) {
-        u64 n = size - pos;
-        if (n > sizeof(rniop))
-            n = sizeof(rniop);
+    unfs_node_io_t rniop;
+    while (pos < niop.node.size) {
+        u64 n = niop.node.size - pos;
+        if (n > sizeof(rniop)) n = sizeof(rniop);
         unfs_file_read(fd, &rniop, pos, n);
-        if (memcmp(&wniop, &rniop, sizeof(rniop)))
+        if (memcmp(&niop, &rniop, n))
             FATAL("%s has invalid data", filename);
         pos += n;
     }
@@ -172,9 +150,8 @@ static void check_tree(int tid)
     for (d = 1; d <= tree_depth; d++) {
         snprintf(name + dlen, sizeof (name), "/dir%d", d);
         u64 exp = file_count + 1;
-        if (d < tree_depth)
-            exp++;
-        VERBOSE("# check %s size %ld\n", name, exp);
+        if (d < tree_depth) exp++;
+        VERBOSE("# check %s has %ld children\n", name, exp);
         dlen = strlen(name);
         isdir = 0;
         size = 0;
@@ -184,8 +161,7 @@ static void check_tree(int tid)
             FATAL("%s size %ld expect %ld", name, size, exp);
         for (f = 1; f <= file_count; f++) {
             snprintf(name + dlen, sizeof (name), "/file%d", f);
-            if (f == 1)
-                strcat(name, "x");
+            if (f == 1) strcat(name, "x");
             check_file(name);
         }
     }
@@ -198,7 +174,7 @@ static void test_tree(int tid)
 {
     char name[UNFS_MAXPATH];
     char tmpname[UNFS_MAXPATH];
-    int i, d, f;
+    int d, f;
 
     // create test tree
     snprintf(name, sizeof(name), "/tree%d", tid);
@@ -214,20 +190,20 @@ static void test_tree(int tid)
 
         // create a temporary directory to be moved later
         snprintf(tmpname, sizeof(tmpname), "/tmp%d-dir%d", tid, d);
-        VERBOSE("# add dir %s\n", tmpname);
+        VERBOSE("# create dir %s\n", tmpname);
         if (unfs_create(fs, tmpname, 1, 0))
             FATAL("Create directory %s failed", tmpname);
 
         // create a temporary file to be moved later
-        snprintf(tmpname, sizeof(tmpname), "/tmp%d-file%d", tid, d);
-        VERBOSE("# add file %s\n", tmpname);
+        snprintf(tmpname, sizeof(tmpname), "/tmp%d-dir%d-file", tid, d);
+        VERBOSE("# create file %s\n", tmpname);
         if (unfs_create(fs, tmpname, 0, 0))
             FATAL("Create file %s failed", tmpname);
 
         // create depth level directory
         snprintf(name + dlen, sizeof(name), "/dir%d", d);
         dlen = strlen(name);
-        VERBOSE("# add dir %s\n", name);
+        VERBOSE("# create dir %s\n", name);
         int err = unfs_create(fs, name, 1, 1);
         if (err)
             FATAL("Create directory %s (%s)", name, strerror(err));
@@ -237,7 +213,7 @@ static void test_tree(int tid)
         for (f = 1; f <= file_count; f++) {
             size = random() & 0xffff;
             snprintf(name + dlen, sizeof(name), "/file%d", f);
-            VERBOSE("# add file %s %ld 1\n", name, size);
+            VERBOSE("# create file %s %ld 1\n", name, size);
             unfs_fd_t fd = unfs_file_open(fs, name, UNFS_OPEN_CREATE);
             if (fd.error)
                 FATAL("Create %s (%s)", name, strerror(fd.error));
@@ -245,31 +221,34 @@ static void test_tree(int tid)
             unfs_file_close(fd);
         }
 
-        // add segments to test and temp files alternately until
-        // number of temp file segments are overflown and have to merge
+        // keep resizing until file segments are merged
         unfs_fd_t ftmp = unfs_file_open(fs, tmpname, 0);
         if (ftmp.error)
             FATAL("Open %s (%s)", tmpname, strerror(ftmp.error));
-        int overflow = UNFS_MAXDS / file_count + 2;
         u64 tmpsize = 0;
-        for (f = 1; f <= file_count; f++) {
+        u32 dsc = 0, dsm;
+        for (f = 1;;) {
             snprintf(name + dlen, sizeof (name), "/file%d", f);
-            if (!small_file) {
-                unfs_fd_t fd = unfs_file_open(fs, name, 0);
-                if (fd.error)
-                    FATAL("Open %s (%s)", name, strerror(fd.error));
-                unfs_file_stat(fd, &size, 0, 0);
+            unfs_fd_t fd = unfs_file_open(fs, name, 0);
+            if (fd.error)
+                FATAL("Open %s (%s)", name, strerror(fd.error));
+            unfs_file_stat(fd, &size, 0, 0);
+            int addsize = random() & 0xffff;
+            size += addsize;
+            unfs_file_resize(fd, size, &f);
+            unfs_file_close(fd);
 
-                for (i = 0; i < overflow; i++) {
-                    int addsize = random() & 0xffff;
-                    size += addsize;
-                    unfs_file_resize(fd, size, &f);
-                    tmpsize += addsize;
-                    unfs_file_resize(ftmp, tmpsize, 0);
-                }
-                unfs_file_close(fd);
-            }
-            mark_file(name);
+            tmpsize += addsize;
+            unfs_file_resize(ftmp, tmpsize, 0);
+            unfs_file_stat(ftmp, &size, &dsm, 0);
+            if (dsm < dsc) break;
+            dsc = dsm;
+            if (++f > file_count) f = 1;
+        }
+        while (f-- > 0) {
+            tmpsize += dsc * f;
+            unfs_file_resize(ftmp, tmpsize, 0);
+            unfs_file_stat(ftmp, &size, &dsm, 0);
         }
         unfs_file_close(ftmp);
 
@@ -282,17 +261,23 @@ static void test_tree(int tid)
         // move a temporary directory over
         snprintf(tmpname, sizeof(tmpname), "/tmp%d-dir%d", tid, d);
         snprintf(name + dlen, sizeof(name), "/dir.%d.%d", tid, d);
-        VERBOSE("# move dir %s %s\n", tmpname, name);
+        VERBOSE("# rename dir %s %s\n", tmpname, name);
         if (unfs_rename(fs, tmpname, name, 0))
             FATAL("Move dir %s %s failed", tmpname, name);
 
         // move a temporary file over
-        snprintf(tmpname, sizeof(tmpname), "/tmp%d-file%d", tid, d);
+        snprintf(tmpname, sizeof(tmpname), "/tmp%d-dir%d-file", tid, d);
         snprintf(name + dlen, sizeof(name), "/file1x");
-        VERBOSE("# move file %s %s\n", tmpname, name);
+        VERBOSE("# rename file %s %s\n", tmpname, name);
         if (unfs_rename(fs, tmpname, name, 0))
             FATAL("Move file %s %s failed", tmpname, name);
-        mark_file(name);
+
+        // write to each file with unique data
+        for (f = 1; f <= file_count; f++) {
+            snprintf(name + dlen, sizeof (name), "/file%d", f);
+            if (f == 1) strcat(name, "x");
+            mark_file(name);
+        }
     }
 }
 
@@ -321,7 +306,7 @@ int main(int argc, char** argv)
     prog = prog ? prog + 1 : argv[0];
     int opt, t;
 
-    while ((opt = getopt(argc, argv, "n:t:d:f:vs")) != -1) {
+    while ((opt = getopt(argc, argv, "n:t:d:f:v")) != -1) {
         switch (opt) {
         case 'v':
             verbose = 1;
@@ -344,9 +329,6 @@ int main(int argc, char** argv)
             if (file_count <= 0)
                 FATAL("File count must be > 0");
             break;
-        case 's':
-            small_file = 1;
-            break;
         default:
             fprintf(stderr, usage, prog);
             exit(1);
@@ -354,9 +336,8 @@ int main(int argc, char** argv)
     }
 
     const char* device = getenv("UNFS_DEVICE");
-    if (optind < argc) {
-        device = argv[optind];
-    } else if (!device) {
+    if ((optind + 1) == argc) device = argv[optind++];
+    if (!device || optind != argc) {
         fprintf(stderr, usage, prog);
         exit(1);
     }
@@ -366,7 +347,7 @@ int main(int argc, char** argv)
 
     // Format new UNFS filesystem
     printf("UNFS format device %s\n", device);
-    if (unfs_format(device, prog, 0))
+    if (unfs_format(device, prog, verbose))
         FATAL("UNFS format failed");
 
     // Open to access UNFS filesystem
@@ -376,7 +357,7 @@ int main(int argc, char** argv)
         FATAL("UNFS open failed");
 
     // Spawn test threads
-    printf("Test %d trees %d depths %d files per directory\n",
+    printf("Test %d trees %d directories %d files per directory\n",
                                     thread_count, tree_depth, file_count);
     time_t tstart = time(0);
     sem_init(&sm_ready, 0, 0);
@@ -386,10 +367,8 @@ int main(int argc, char** argv)
         pthread_create(&pts[t], 0, test_thread, (void*)(long)(t + 1));
         sem_wait(&sm_ready);
     }
-    for (t = 0; t < thread_count; t++)
-        sem_post(&sm_run);
-    for (t = 0; t < thread_count; t++)
-        pthread_join(pts[t], 0);
+    for (t = 0; t < thread_count; t++) sem_post(&sm_run);
+    for (t = 0; t < thread_count; t++) pthread_join(pts[t], 0);
     free(pts);
     sem_destroy(&sm_run);
     sem_destroy(&sm_ready);
@@ -398,6 +377,8 @@ int main(int argc, char** argv)
     // Reopen filesystem and verify tree again
     printf("UNFS reopen device %s\n", device);
     fs = unfs_open(device);
+    if (!fs)
+        FATAL("UNFS open failed");
     int isdir;
     u64 size;
     if (!unfs_exist(fs, "/", &isdir, &size))
@@ -406,8 +387,7 @@ int main(int argc, char** argv)
         FATAL("/ size %ld expect %d", size, thread_count);
     if (!fs)
         FATAL("UNFS open failed");
-    for (t = 1; t <= thread_count; t++)
-        check_tree(t);
+    for (t = 1; t <= thread_count; t++) check_tree(t);
 
     // Verify filesystem info
     unfs_header_t hdr;
@@ -424,11 +404,10 @@ int main(int argc, char** argv)
     if (hdr.fdcount != exp)
         FATAL("FD count %#lx expect %#lx", hdr.fdcount, exp);
     exp = hdr.pagecount - (hdr.fdcount + hdr.delcount + 1) * UNFS_FILEPC;
-    if (hdr.fdpage != exp)
-        FATAL("FD page %#lx expect %#lx", hdr.fdpage, exp);
+    if (hdr.fdnextpage != exp)
+        FATAL("FD next %#lx expect %#lx", hdr.fdnextpage, exp);
 
-    if (unfs_check(device))
-        return 1;
+    if (unfs_check(device)) return 1;
     printf("UNFS COMPLEX TREE TEST COMPLETE (%ld seconds)\n", time(0) - tstart);
     LOG_CLOSE();
     return 0;

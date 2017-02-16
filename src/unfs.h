@@ -34,8 +34,8 @@
  * @brief UNFS filesystem header file.
  *
  * The UNFS filesystem disk layout (in 4k-page unit):
- *  Page 0:     Filesystem header info.
- *  Page 1-N:   Bitmap of free pages.
+ *  Page 0-1:   Filesystem header info with the deleted stack.
+ *  Page 2-N:   Bitmap of free pages.
  *  Page N+:    File data starts after free bitmap pages growing upward.
  *  Page Z-:    File/Directory entries start from end of the disk growing
  *              downward.  Each entry will take 2 disk pages.  The first
@@ -91,7 +91,8 @@ typedef uint64_t        u64;        ///< 64-bit unsigned
 
 #define UNFS_VERSION    "UNFS-1.0"          ///< filesystem version name
 #define UNFS_HEADPA     0                   ///< header page address
-#define UNFS_MAPPA      1                   ///< start bitmap page address
+#define UNFS_HEADPC     2                   ///< header page count
+#define UNFS_MAPPA      UNFS_HEADPC         ///< start bitmap page address
 #define UNFS_PAGESHIFT  12                  ///< page shift value
 #define UNFS_PAGESIZE   (1<<UNFS_PAGESHIFT) ///< expected page size
 #define UNFS_MAXPATH    (UNFS_PAGESIZE-2)   ///< max file name length
@@ -122,11 +123,14 @@ typedef struct {
 /// File node in memory, where name will be allocated per string length,
 /// directory node contains no segment, and file node will be 4k-page
 typedef struct _unfs_node {
-    char*               name;               ///< file name (non-persistent)
-    struct _unfs_node*  parent;             ///< parent node (non-persistent)
-    pthread_rwlock_t    lock;               ///< file lock (non-persistent)
-    u32                 memsize;            ///< memory size (non-persistent)
-    u32                 open;               ///< open count (non-persistent)
+    // in-memory only fields
+    char*               name;               ///< file name
+    struct _unfs_node*  parent;             ///< parent node
+    pthread_rwlock_t    lock;               ///< file lock
+    u32                 open;               ///< open count
+    u32                 memsize;            ///< node allocated size
+    int                 updated;            ///< node persistent data updated
+    // persistent fields
     u64                 pageid;             ///< page address
     u64                 parentid;           ///< parent page address
     u64                 size;               ///< file or directory size
@@ -169,7 +173,7 @@ typedef struct {
 typedef u32 unfs_ioc_t;
 
 /// Client filesystem handle
-typedef u64 unfs_fs_t;
+typedef s64 unfs_fs_t;
 
 /// Device I/O implementation structure
 typedef struct {
@@ -194,7 +198,7 @@ typedef struct {
 /// Filesystem header page layout (at lba 0)
 typedef struct {
     union {
-        unfs_page_t     header;             ///< header page
+        unfs_page_t     info[UNFS_HEADPC];  ///< header info pages
         struct {
             char        label[64];          ///< disk label
             char        version[16];        ///< filesystem version name
@@ -204,7 +208,7 @@ typedef struct {
             u32         blocksize;          ///< block size
             u32         pagesize;           ///< page size
             u64         datapage;           ///< start data page address
-            u64         fdpage;             ///< next file entry page address
+            u64         fdnextpage;         ///< next file entry page address
             u64         fdcount;            ///< number of file entries
             u64         dircount;           ///< number of directories count
             u64         mapsize;            ///< map size in 64-bit word
@@ -235,6 +239,7 @@ void unfs_dir_list_free(unfs_dir_list_t* listp);
 
 unfs_fd_t unfs_file_open(unfs_fs_t fs, const char* name, unfs_mode_t mode);
 int unfs_file_close(unfs_fd_t fd);
+int unfs_file_sync(unfs_fd_t fd);
 char* unfs_file_name(unfs_fd_t fd, char* name, int len);
 int unfs_file_stat(unfs_fd_t fd, u64* sizep, u32* dscp, unfs_ds_t** dslp);
 int unfs_file_resize(unfs_fd_t fd, u64 size, int* fill);

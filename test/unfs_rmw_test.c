@@ -116,9 +116,6 @@ test_entry_t test_table[] = {
 /// Print if verbose flag is set
 #define VERBOSE(fmt, arg...) if (verbose) printf(fmt, ##arg)
 
-/// Print fatal error message and exit
-#define FATAL(fmt, arg...) do { ERROR(fmt, ##arg); exit(1); } while (0)
-
 
 /**
  * Test file read/write of a given entry with offset, length, pattern, and size. 
@@ -232,13 +229,13 @@ int main(int argc, char** argv)
             break;
         default:
             fprintf(stderr, usage, prog);
+            exit(1);
         }
     }
 
     const char* device = getenv("UNFS_DEVICE");
-    if (optind < argc) {
-        device = argv[optind];
-    } else if (!device) {
+    if ((optind + 1) == argc) device = argv[optind++];
+    if (!device || optind != argc) {
         fprintf(stderr, usage, prog);
         exit(1);
     }
@@ -248,7 +245,7 @@ int main(int argc, char** argv)
 
     // Format new UNFS filesystem
     printf("UNFS format device %s\n", device);
-    if (unfs_format(device, prog, 0))
+    if (unfs_format(device, prog, verbose))
         FATAL("UNFS format failed");
 
     // Open to access UNFS filesystem
@@ -267,10 +264,8 @@ int main(int argc, char** argv)
         pthread_create(&pts[i], 0, test_thread, (void*)(long)(i + 1));
         sem_wait(&sm_ready);
     }
-    for (i = 0; i < thread_count; i++)
-        sem_post(&sm_run);
-    for (i = 0; i < thread_count; i++)
-        pthread_join(pts[i], 0);
+    for (i = 0; i < thread_count; i++) sem_post(&sm_run);
+    for (i = 0; i < thread_count; i++) pthread_join(pts[i], 0);
     free(pts);
     sem_destroy(&sm_ready);
     sem_destroy(&sm_run);
@@ -304,15 +299,14 @@ int main(int argc, char** argv)
         FATAL("FD count %#lx expect %#lx", hdr.fdcount, fdcount);
     if (hdr.dircount != 1)
         FATAL("Dir count %ld expect 1", hdr.dircount);
-    u64 fdpage = hdr.pagecount - (fdcount + 1) * UNFS_FILEPC;
-    if (hdr.fdpage != fdpage)
-        FATAL("FD page %#lx expect %#lx", hdr.fdcount, fdpage);
+    u64 fdnextpage = hdr.pagecount - (fdcount + 1) * UNFS_FILEPC;
+    if (hdr.fdnextpage != fdnextpage)
+        FATAL("FD next %#lx expect %#lx", hdr.fdcount, fdnextpage);
     u64 pagefree = hdr.pagecount - (fdcount * UNFS_FILEPC + thread_count);
     if (hdr.pagefree != pagefree)
-        FATAL("Free pages %#lx expect %#lx", hdr.pagefree, pagefree);
+        FATAL("expect %#lx free pages", pagefree);
 
-    if (unfs_check(device))
-        return 1;
+    if (unfs_check(device)) return 1;
 
     printf("UNFS READ-MODIFIED-WRITE TEST COMPLETE (%ld secs)\n", time(0) - tstart);
     LOG_CLOSE();

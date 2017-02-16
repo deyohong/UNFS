@@ -216,8 +216,10 @@ static int unfs_wt_file_write(WT_FILE_HANDLE *fh, WT_SESSION *ses,
  */
 static int unfs_wt_file_sync(WT_FILE_HANDLE *fh, WT_SESSION *ses)
 {
+    if (!fh->file_system) return 0;
     DEBUG_FN("%s", fh->name);
-    return 0;
+    unfs_wt_file_handle_t* uwfh = (unfs_wt_file_handle_t*)fh;
+    return unfs_file_sync(uwfh->unfd);
 }
 
 /**

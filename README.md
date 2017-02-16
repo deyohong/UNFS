@@ -1,7 +1,7 @@
 UNFS - User Space Nameless Filesystem
 =====================================
 
-UNFS is a user space filesystem developed at Miron Technology.
+UNFS is a user space simple filesystem developed at Miron Technology.
 It is designed as a proof of concept to enable applications that
 have dependency on filesystem to work with UNVMe driver.
 
@@ -132,13 +132,16 @@ To setup for UNVMe device before running YCSB:
 
     $ export UNFS_DEVICE=07:00.0
 
-    $ /usr/local/bin/unfs_format
 
-
-To setup for native XFS filesystem on NVMe device:
+To setup for raw device before running YCSB:
 
     $ /usr/local/bin/unvme-setup reset
     07:00.0 Dell Express Flash NVMe XS1715 SSD 800GB - (mapped to nvme0)
+
+    $ export UNFS_DEVICE=/dev/nvme0n1
+
+
+To setup for native XFS filesystem on NVMe device:
 
     $ mkfs -t xfs /dev/nvme0n1
 
@@ -151,11 +154,16 @@ To run YCSB on MongoDB:
 
     $ cd /opt/mongo
     $ /opt/unfs/wiredtiger/unfs-mongo-ycsb
-or
+
+
+To override the number of operations and threads:
+
     $ OPCOUNT=50000 THREADS='1 4' /opt/unfs/wiredtiger/unfs-mongo-ycsb
 
+
 It should be noted that the user space UNFS/UNVMe stack is primarily designed
-for future 3D-Crosspoint products (to demonstrate user polling performance
-advantage of fast device with less than 5 usec response time).  UNFS/UNVMe
-does not perform well with slower NAND-based SSD technology.
+for future 3D Xpoint products (to demonstrate user polling performance
+advantage for fast device with less than 5 usec response time).  UNFS/UNVMe,
+however, does not perform well with slower NAND-based SSD technology due to
+synchronous polling.
 

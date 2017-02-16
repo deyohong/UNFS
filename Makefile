@@ -38,6 +38,7 @@ ifneq (,$(WIREDTIGERDIR))
 SUBDIRS += wiredtiger
 endif
 
+
 all: $(SUBDIRS)
 
 $(SUBDIRS):
@@ -47,10 +48,9 @@ install: uninstall all
 	mkdir -p $(INSTALLDIR)/include $(INSTALLDIR)/lib $(INSTALLDIR)/bin 
 	/usr/bin/install -m644 src/unfs.h $(INSTALLDIR)/include
 	/usr/bin/install -m755 test/unfs_{format,check,shell} $(INSTALLDIR)/bin
-	/usr/bin/install -m644 src/libunfs*.a $(INSTALLDIR)/lib
-	/usr/bin/install -m755 src/libunfs*.so $(INSTALLDIR)/lib
+	/usr/bin/install -m644 src/libunfs*.{a,so} $(INSTALLDIR)/lib
 ifneq (,$(WIREDTIGERDIR))
-	/usr/bin/install -m755 wiredtiger/libunfswt.so $(INSTALLDIR)/lib
+	/usr/bin/install -m755 wiredtiger/libunfs*.so $(INSTALLDIR)/lib
 endif
 
 uninstall:
