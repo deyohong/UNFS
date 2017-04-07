@@ -177,7 +177,7 @@ typedef s64 unfs_fs_t;
 
 /// Device I/O implementation structure
 typedef struct {
-    /// device name;
+    /// device name
     char*           name;
     /// close device
     void            (*close)();

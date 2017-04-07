@@ -29,16 +29,16 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-SHELL := /bin/sh
+SHELL:=/bin/bash
 
 # Default compilation flags
-CFLAGS ?= -O2
-CFLAGS += -Wall -fPIC -mpopcnt
-CPPFLAGS += -D_GNU_SOURCE -DUNFS_UNVME
+CFLAGS?=-O2
+CFLAGS+=-Wall -fPIC -march=native
+CPPFLAGS+=-D_GNU_SOURCE -DUNFS_UNVME
 
 # To turn on debug logging
-#CPPFLAGS += -DUNFS_DEBUG
+#CPPFLAGS+=-DUNFS_DEBUG
 
-# To build WiredTiger plugin library for MongoDB 3.4
-WIREDTIGERDIR = /opt/wiredtiger
+# To build UNFS plugin for MongoDB
+#MONGODIR=/opt/mongo
 

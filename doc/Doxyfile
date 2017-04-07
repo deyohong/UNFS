@@ -1,5 +1,5 @@
 PROJECT_NAME            = "UNFS and WiredTiger Plugin"
-INPUT                   = . ../src ../test ../wiredtiger
+INPUT                   = . ../src ../test ../mongo
 FILE_PATTERNS           = *.dox *.h *.c
 EXCLUDE_PATTERNS        = *.mod.c
 MACRO_EXPANSION         = NO

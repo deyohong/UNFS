@@ -38,7 +38,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <error.h>
+#include <err.h>
 
 #include "unfs.h"
 
@@ -65,7 +65,7 @@ int main(int argc, char** argv)
             setenv("UNFS_NSID", optarg, 1);
             break;
         default:
-            error(1, 0, usage, prog);
+            errx(1, usage, prog);
         }
     }
 
@@ -73,7 +73,7 @@ int main(int argc, char** argv)
     if (optind < argc) {
         device = argv[optind];
     } else if (!device) {
-        error(1, 0, usage, prog);
+        errx(1, usage, prog);
     }
 
     printf("UNFS check device %s\n", device);

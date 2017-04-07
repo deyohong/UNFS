@@ -39,9 +39,9 @@
 #include <termios.h>
 #include <unistd.h>
 #include <string.h>
-#include <errno.h>
-#include <error.h>
 #include <ctype.h>
+#include <errno.h>
+#include <err.h>
 
 #include "unfs.h"
 
@@ -598,10 +598,10 @@ int main(int argc, char** argv)
         case 'h':
             histsize = atoi(optarg);
             if (histsize <= 0)
-                error(1, 0, "history size must be > 0");
+                errx(1, "history size must be > 0");
             break;
         default:
-            error(1, 0, usage, prog);
+            errx(1, usage, prog);
         }
     }
 
@@ -609,14 +609,14 @@ int main(int argc, char** argv)
     if (optind < argc)
         name = argv[optind];
     else if (!name)
-        error(1, 0, usage, prog);
+        errx(1, usage, prog);
     device = strdup(name);
 
     history = (unfs_page_t*)calloc(histsize, sizeof(unfs_page_t));
 
     fs = unfs_open(device);
     if (!fs)
-        error(1, 0, "UNFS open failed");
+        errx(1, "UNFS open failed");
 
     printf("UNFS Shell (device %s)\n", device);
 

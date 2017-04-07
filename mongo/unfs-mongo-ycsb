@@ -1,0 +1,280 @@
+#!/bin/bash
+# This script may be used to run YCSB benchmarks for MongoDB on UNFS.
+#
+# Based on the specified device name, it will assume proper setup for running
+# MongoDB on UNFS (using UNVMe driver or raw device) or on native filesystem.
+#
+# This test must be run from the mongo source directory.
+# Output results will be saved to the "ycsb-results" directory.
+#
+# Run against UNFS using UNVMe driver:
+#
+#   $ unvme-setup bind
+#   $ mkdir -p /data/db
+#   $ ./unfs-mongo-ycsb 07:00.0
+#
+# Run against UNFS using direct I/O:
+#
+#   $ unvme-setup reset
+#   $ mkdir -p /data/db
+#   $ ./unfs-mongo-ycsb /dev/nvme0n1
+#
+# Run against native XFS filesystem:
+#
+#   $ unvme-setup reset
+#   $ mkdir -p /data/db
+#   $ mkfs.xfs -f /dev/nvme0n1
+#   $ mount -o sync /dev/nvme0n1 /data/db
+#   $ ./unfs-mongo-ycsb
+#
+
+# Program name and usage
+PROG=$(basename $0)
+USAGE="Usage: ${PROG} [DEVICE_NAME] [KEY=VALUE]..."
+
+# Default test directories
+: ${YCSB=/opt/ycsb/bin/ycsb}
+: ${MONGOD=/opt/mongo/mongod}
+: ${DBPATH=/data/db}
+: ${LOGDIR=/data/ycsb-results}
+
+# Default test options
+: ${OPCOUNT=1000000}
+: ${THREADS="01 08 16"}
+: ${RWRATIOS="95 5"}
+: ${MONGODRV=mongodb}
+#: ${MONGODRV=mongodb-async}
+
+# YCSB workload
+YCSBTEXT="workload=com.yahoo.ycsb.workloads.CoreWorkload
+recordcount=${OPCOUNT}
+operationcount=${OPCOUNT}
+readallfields=true
+scanproportion=0
+insertproportion=0
+requestdistribution=zipfian"
+
+
+prompt()
+{
+    #read -p "Press <Enter> to continue..."
+    echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    sleep 5
+}
+
+kill_proc()
+{
+    pkill -f $1
+    while [ -n "$(pgrep -f $1)" ]; do
+        sleep 3
+    done
+}
+
+poll_status()
+{
+    lc=0
+    while [ 1 ]; do
+        lcn=$(wc -l $1 | cut -d' ' -f1)
+        if [ ${lc} -eq ${lcn} ]; then
+            sleep 5
+            continue
+        fi
+        ((lc++))
+        out=$(sed -n "${lc},${lcn}p" $1)
+        lc=${lcn}
+        echo "${out}"
+        if [[ ${out} =~ "$2" ]]; then
+            sleep 5
+            break
+        elif [[ ${out} =~ (Exception:|BACKTRACE|Connection refused) ]]; then
+            ERROR=1
+            break
+        fi
+    done
+}
+
+run_mongod()
+{
+    if [ -z "$(pgrep mongod)" ]; then
+        logfile=${LOGPREFIX}.${OPCOUNT}.t$1.mongod.${LOGSUFFIX}
+        echo -e "\n${logfile}"
+        mkdir -p ${DBPATH}
+        rm -rf ${DBPATH}/*
+        echo ${DEV} > ${logfile}
+        if [ -n "${UNFS_DEVICE}" ]; then
+            unfs_format >> ${logfile} 2>&1
+            echo >> ${logfile}
+        fi
+
+        cmd="numactl --interleave=all ${MONGOD} ${MONGOARGS}"
+        echo -e "\n>>> ${cmd}" >> ${logfile}
+        ${cmd} >> ${logfile} 2>&1 &
+        poll_status ${logfile} 'waiting for connections'
+        if [ ${ERROR} -ne 0 ]; then
+            kill_proc ${MONGOD}
+            exit 1
+        fi
+        prompt
+    fi
+}
+
+load_ycsb()
+{
+    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.load.${LOGSUFFIX}
+    echo -e "\n${logfile}"
+    echo ${DEV} > ${logfile}
+    cmd="${YCSB} load ${MONGODRV} -P ${WORKLOAD} -threads $1"
+    echo ">>> ${cmd}" >> ${logfile}
+    echo "+++ $(date)" >> ${logfile}
+    ${cmd} >> ${logfile} 2>&1 &
+    poll_status ${logfile} 'Return=OK'
+    echo "+++ $(date)" | tee -a ${logfile}
+    if [ ${ERROR} -ne 0 ]; then
+        kill_proc ${YCSB}
+        kill_proc ${MONGOD}
+        exit 1
+    fi
+    prompt
+}
+
+run_ycsb()
+{
+    logfile=${LOGPREFIX}.${OPCOUNT}.t$1.r$2w$3.${LOGSUFFIX}
+
+    # check if test has run successfully
+    if [ -e ${logfile} ] && [ -n "$(grep '[UPDATE], Return=OK,' ${logfile})" ]; then
+        echo -e "\nSkip ${logfile}..."
+    else
+        echo -e "\n${logfile}"
+        echo ${DEV} > ${logfile}
+        cmd="${YCSB} run ${MONGODRV} -P ${WORKLOAD} -threads $1 -p readproportion=.$2 -p updateproportion=.$3"
+        echo ">>> ${cmd}" >> ${logfile}
+        echo "+++ $(date)" >> ${logfile}
+        ${cmd} >> ${logfile} 2>&1 &
+        poll_status ${logfile} '[UPDATE], Return=OK'
+        echo "+++ $(date)" | tee -a ${logfile}
+        if [ ${ERROR} -ne 0 ]; then
+            kill_proc ${YCSB}
+            kill_proc ${MONGOD}
+            exit 1
+        fi
+    fi
+    prompt
+}
+
+
+# Check executables
+if [ ! -x ${YCSB} ]; then echo "${YCSB} not found"; exit; fi
+if [ ! -x ${MONGOD} ]; then echo "${MONGOD} not found"; exit; fi
+
+
+# Parse test arguments
+unset UNFS_DEVICE
+for i in $@; do
+    case $i in
+    [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f].[0-9A-Fa-f])
+        export UNFS_DEVICE=$i
+        ;;
+
+    /dev/*)
+        export UNFS_DEVICE=$i
+        ;;
+
+    *=*)
+        # Workload key=value may be specified to override defaults
+        pattern=${i/=*/}
+        if [[ "${YCSBTEXT}" =~ "${pattern}=" ]]; then
+            YCSBTEXT=$(echo "${YCSBTEXT}" | sed "s/${pattern}=[_0-9A-Za-z]\+/$i/g")
+        else
+            YCSBTEXT="${YCSBTEXT}\n$i"
+        fi
+        ;;
+
+    *)
+        echo ${USAGE}
+        exit 1
+        ;;
+    esac
+done
+
+MONGOARGS="--quiet --nojournal --dbpath ${DBPATH}"
+
+case ${UNFS_DEVICE} in
+[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f].[0-9A-Fa-f])
+    echo "Run YCSB for MongoDB on UNFS UNVMe Device ${UNFS_DEVICE}"
+    MONGOARGS="${MONGOARGS} --wiredTigerEngineConfigString extensions=[libunfswt.so={entry=unfs_wt_init,early_load=true}]"
+    LOGSUFFIX="unvme"
+    DEV=$(unvme-setup list | grep ${UNFS_DEVICE})
+    if [[ ${DEV} =~ loaded ]]; then LOGSUFFIX="unvmed"; fi
+    ;;
+/dev/*)
+    echo "Run YCSB for MongoDB on UNFS Raw Device ${UNFS_DEVICE}"
+    MONGOARGS="${MONGOARGS} --wiredTigerEngineConfigString extensions=[libunfswt.so={entry=unfs_wt_init,early_load=true}]"
+    LOGSUFFIX="raw"
+    DEV=$(unvme-setup list | grep $(echo ${UNFS_DEVICE} | cut -b1-10))
+    ;;
+*)
+    echo "Run YCSB for MongoDB on XFS Filesystem"
+    LOGSUFFIX="xfs"
+    DEV=$(unvme-setup list | grep $(grep ${DBPATH} /etc/mtab | cut -b1-10))
+    ;;
+esac
+
+
+# Adjust OPCOUNT in case it was changed with specified parameter
+OPCOUNT=$(echo ${YCSBTEXT} | sed 's/.*operationcount=\([0-9]\+\).*/\1/')
+
+
+# Create log directory
+LOGPREFIX=${LOGDIR}/${HOSTNAME}
+mkdir -p ${LOGDIR}
+
+
+# Generate workload file
+WORKLOAD=${LOGPREFIX}.${OPCOUNT}.workload
+echo "${YCSBTEXT}" > ${WORKLOAD}
+if [ $? -ne 0 ]; then exit; fi
+
+
+# Check and run tests
+sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"
+sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/defrag"
+
+ERROR=0
+kill_proc mongod
+
+for t in ${THREADS}; do
+    logname=${LOGPREFIX}.${OPCOUNT}.t$t
+
+    # check if the thread result set had already completed successfully
+    completed=1
+    logload=${logname}.load.${LOGSUFFIX}
+    if [ ! -e ${logload} ] || [ -z "$(grep 'Return=OK' ${logload})" ]; then
+        completed=0
+    else
+        for r in ${RWRATIOS}; do
+            rp=$(printf '%02d' $r)
+            wp=$(printf '%02d' $((100-$r)))
+            logrw=${logname}.r${rp}w${wp}.${LOGSUFFIX}
+            if [ ! -e ${logrw} ] || [ -z "$(grep 'Return=OK' ${logrw})" ]; then
+                completed=0
+            fi
+        done
+    fi
+
+    # run thread test if not completed
+    if [ ${completed} == 0 ]; then
+        # restart mongod for each load
+        run_mongod $t
+        load_ycsb $t
+        for r in ${RWRATIOS}; do
+            rp=$(printf '%02d' $r)
+            wp=$(printf '%02d' $((100-$r)))
+            run_ycsb $t $rp $wp
+        done
+        kill_proc mongod
+    else
+        echo -e "\nSkip ${logname}...${LOGSUFFIX}"
+    fi
+done
+

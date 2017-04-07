@@ -55,7 +55,7 @@ $(OBJS): $(INCS)
 %.i: %.c
 	$(CPP) $(CPPFLAGS) $< -o $@
 
-lint: COPT = -D_FORTIFY_SOURCE=2 -O2
+lint: CFLAGS = -Wall -D_FORTIFY_SOURCE=2 -DUNFS_DEBUG -O3
 lint: clean $(OBJS)
 	@$(RM) *.o
 

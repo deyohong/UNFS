@@ -515,8 +515,6 @@ int unfs_wt_init(WT_CONNECTION *conn, WT_CONFIG_ARG *config)
     while ((err = parser->next(parser, &key, &val)) == 0) {
         if (strncmp("device", key.str, key.len) == 0) {
             setenv("UNFS_DEVICE", val.str, 1);
-        } else if (strncmp("nsid", key.str, key.len) == 0) {
-            setenv("UNFS_NSID", val.str, 1);
         } else if (strncmp("qcount", key.str, key.len) == 0) {
             setenv("UNFS_QCOUNT", val.str, 1);
         } else if (strncmp("qdepth", key.str, key.len) == 0) {

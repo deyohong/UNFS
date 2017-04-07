@@ -37,20 +37,10 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <error.h>
+#include <err.h>
 
 #include "unfs.h"
 #include "unfs_wt.h"
-
-
-/// Usage
-static const char* usage =
-"\nUsage: %s [OPTION]... DEVICE_NAME\n\
-          -n NSID        NVMe namespace id (default N=1)\n\
-          -q QCOUNT      NVMe queue count (default 16)\n\
-          -d QDEPTH      NVMe queue depth (default 32)\n\
-          -h HOMEDIR     home directory\n\
-          DEVICE_NAME    device name\n";
 
 
 /**
@@ -58,6 +48,11 @@ static const char* usage =
  */
 int main(int argc, char** argv)
 {
+    const char* usage = "\nUsage: %s [OPTION]... DEVICENAME\n\
+          -h HOMEDIR    home directory\n\
+          DEVICENAME    device name\n";
+
+
     WT_CONNECTION *conn;
     WT_CURSOR *cursor;
     WT_SESSION *session;
@@ -70,22 +65,16 @@ int main(int argc, char** argv)
     const char* prog = strrchr(argv[0], '/');
     prog = prog ? prog + 1 : argv[0];
 
-    while ((opt = getopt(argc, argv, "n:q:d:p:h:")) != -1) {
+    while ((opt = getopt(argc, argv, "h:")) != -1) {
         switch (opt) {
         case 'n':
             setenv("UNFS_NSID", optarg, 1);
-            break;
-        case 'q':
-            setenv("UNFS_QCOUNT", optarg, 1);
-            break;
-        case 'd':
-            setenv("UNFS_QDEPTH", optarg, 1);
             break;
         case 'h':
             home = optarg;
             break;
         default:
-            error(1, 0, usage, prog);
+           errx(1, usage, prog);
         }
     }
 
@@ -94,10 +83,10 @@ int main(int argc, char** argv)
         device = argv[optind];
         setenv("UNFS_DEVICE", device, 1);
     } else if (!device) {
-        error(1, 0, usage, prog);
+        errx(1, usage, prog);
     }
 
-    printf("WIREDTIGER UNFS EXAMPLE FILESYSTEM TEST BEGIN\n");
+    printf("WIREDTIGER UNFS FILESYSTEM TEST BEGIN\n");
 
     // create filesystem
     printf("UNFS format device %s\n", device);
@@ -197,7 +186,7 @@ int main(int argc, char** argv)
         return (EXIT_FAILURE);
     }
 
-    printf("WIREDTIGER UNFS EXAMPLE FILESYSTEM TEST COMPLETE\n");
+    printf("WIREDTIGER UNFS FILESYSTEM TEST COMPLETE\n");
     free(config);
     return 0;
 }

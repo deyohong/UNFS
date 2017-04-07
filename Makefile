@@ -34,8 +34,8 @@ include Makefile.def
 INSTALLDIR ?= /usr/local
 
 SUBDIRS := src test doc
-ifneq (,$(WIREDTIGERDIR))
-SUBDIRS += wiredtiger
+ifneq (,$(MONGODIR))
+SUBDIRS += mongo
 endif
 
 
@@ -49,8 +49,8 @@ install: uninstall all
 	/usr/bin/install -m644 src/unfs.h $(INSTALLDIR)/include
 	/usr/bin/install -m755 test/unfs_{format,check,shell} $(INSTALLDIR)/bin
 	/usr/bin/install -m644 src/libunfs*.{a,so} $(INSTALLDIR)/lib
-ifneq (,$(WIREDTIGERDIR))
-	/usr/bin/install -m755 wiredtiger/libunfs*.so $(INSTALLDIR)/lib
+ifneq (,$(MONGODIR))
+	/usr/bin/install -m755 mongo/libunfs*.so $(INSTALLDIR)/lib
 endif
 
 uninstall:

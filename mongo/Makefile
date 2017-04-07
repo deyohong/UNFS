@@ -37,8 +37,10 @@ LIBTARGET = libunfswt.so
 INCS := $(wildcard ../src/*.h)
 OBJS := $(patsubst %.c,%.o,$(wildcard *.c))
 
-CPPFLAGS += -I../src -I$(WIREDTIGERDIR)
-LDFLAGS += -L$(WIREDTIGERDIR)/.libs -Wl,-rpath=$(WIREDTIGERDIR)/.libs,-rpath=$(CURDIR)
+WTDIR = $(MONGODIR)/src/third_party/wiredtiger
+
+CPPFLAGS += -I../src -I$(WTDIR)
+LDFLAGS += -L$(WTDIR)/.libs -Wl,-rpath=$(WTDIR)/.libs #,-rpath=$(CURDIR)
 LDLIBS += -lwiredtiger
 
 
@@ -58,12 +60,12 @@ $(OBJS): $(INCS)
 %.i: %.c
 	$(CPP) $(CPPFLAGS) $< -o $@
 
-lint: COPT = -D_FORTIFY_SOURCE=2 -O2
+lint: CFLAGS = -Wall -D_FORTIFY_SOURCE=2 -DUNFS_DEBUG -O3
 lint: clean $(OBJS)
 	@$(RM) *.o
 
 clean:
-	$(RM) $(TARGET) *.o *.i *.so*
+	$(RM) $(TARGET) $(LIBTARGET) *.o *.i *.so*
 
 .PHONY: all lint clean
 
